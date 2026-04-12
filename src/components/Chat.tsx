@@ -2,6 +2,8 @@ import * as React from 'react';
 import { Send, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Message {
   id: string;
@@ -23,13 +25,57 @@ export const ChatMessage = ({ message }: { message: Message; key?: string }) => 
     >
       <div
         className={cn(
-          'max-w-[80%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm',
+          'max-w-[85%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm',
           isAssistant
             ? 'bg-white border border-gray-100 text-gray-800 rounded-bl-none'
             : 'bg-indigo-600 text-white rounded-br-none'
         )}
       >
-        {message.content}
+        <div className={cn(
+          'markdown-body',
+          !isAssistant && 'text-white'
+        )}>
+          <ReactMarkdown 
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({ node, inline, className, children, ...props }: any) {
+                if (inline) {
+                  return (
+                    <code className={cn(
+                      'px-1.5 py-0.5 rounded font-mono text-xs',
+                      isAssistant ? 'bg-gray-100 text-indigo-600' : 'bg-indigo-500 text-white'
+                    )} {...props}>
+                      {children}
+                    </code>
+                  );
+                }
+                return (
+                  <pre className={cn(
+                    'p-4 rounded-xl font-mono text-xs overflow-x-auto my-3',
+                    isAssistant ? 'bg-gray-900 text-gray-100' : 'bg-indigo-700 text-white'
+                  )}>
+                    <code {...props}>{children}</code>
+                  </pre>
+                );
+              },
+              a({ node, ...props }: any) {
+                return (
+                  <a 
+                    className={cn(
+                      'underline transition-opacity hover:opacity-80',
+                      isAssistant ? 'text-indigo-600' : 'text-white'
+                    )} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    {...props} 
+                  />
+                );
+              }
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
+        </div>
       </div>
     </motion.div>
   );

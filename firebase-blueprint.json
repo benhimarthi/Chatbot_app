@@ -1,0 +1,98 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user profile in the system.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "businessName": { "type": "string" },
+        "customInstructions": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "createdAt": { "type": "object" },
+        "subscriptionPlan": { "type": "string", "enum": ["Free", "Pro", "Enterprise"] }
+      },
+      "required": ["uid", "email"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message in the single chat conversation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["userId", "role", "content"]
+    },
+    "Document": {
+      "title": "Document",
+      "description": "A document uploaded by a user for RAG processing.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "fileType": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "processing", "processed", "error"] },
+        "chunkCount": { "type": "number" },
+        "createdAt": { "type": "object" },
+        "updatedAt": { "type": "object" },
+        "error": { "type": "string" }
+      },
+      "required": ["userId", "title", "fileType", "status", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "A notification for a user about system events.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who owns this notification." },
+        "title": { "type": "string", "description": "The title of the notification." },
+        "message": { "type": "string", "description": "The body text of the notification." },
+        "type": { "type": "string", "enum": ["info", "success", "warning", "error"], "description": "The type of notification." },
+        "read": { "type": "boolean", "description": "Whether the notification has been read." },
+        "createdAt": { "type": "object", "description": "Firestore Timestamp of when the notification was created." }
+      },
+      "required": ["userId", "title", "message", "type", "read", "createdAt"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "A hotel or restaurant booking.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The business owner's UID." },
+        "type": { "type": "string", "enum": ["restaurant", "hotel"] },
+        "data": { "type": "object", "description": "The collected booking details." },
+        "status": { "type": "string", "enum": ["confirmed", "cancelled", "pending"] },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["userId", "type", "data", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles."
+    },
+    "/users/{userId}/messages/{msgId}": {
+      "schema": "Message",
+      "description": "Messages for the user's single chat."
+    },
+    "/users/{userId}/documents/{docId}": {
+      "schema": "Document",
+      "description": "User uploaded documents for RAG."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Collection of notifications for all users."
+    },
+    "/bookings/{bookingId}": {
+      "schema": "Booking",
+      "description": "Global collection of bookings."
+    }
+  }
+}

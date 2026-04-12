@@ -3,10 +3,21 @@ import { Bot, Zap, Shield, Globe, ArrowRight, Check } from 'lucide-react';
 import { CustomButton as Button, Card } from './components/UI';
 import { motion } from 'motion/react';
 import { cn } from './lib/utils';
+import { AuthModal } from './components/AuthModal';
+import * as React from 'react';
 
 export const LandingPage = () => {
+  console.log('LandingPage rendering');
+  const [isAuthModalOpen, setIsAuthModalOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    console.log('LandingPage mounted');
+  }, []);
+
   return (
     <div className="min-h-screen bg-white selection:bg-indigo-100">
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
+      
       {/* Navbar */}
       <nav className="max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -21,10 +32,8 @@ export const LandingPage = () => {
           <Link to="/dashboard" className="text-sm font-medium text-gray-600 hover:text-gray-900">Dashboard</Link>
         </div>
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm">Log in</Button>
-          <Link to="/dashboard">
-            <Button size="sm">Get Started</Button>
-          </Link>
+          <Button variant="ghost" size="sm" onClick={() => setIsAuthModalOpen(true)}>Log in</Button>
+          <Button size="sm" onClick={() => setIsAuthModalOpen(true)}>Get Started</Button>
         </div>
       </nav>
 
@@ -46,11 +55,9 @@ export const LandingPage = () => {
             Upload your documents, train your custom AI, and let it answer your customers automatically. No coding required.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link to="/dashboard">
-              <Button size="lg" className="w-full sm:w-auto gap-2">
-                Start Building Free <ArrowRight className="w-5 h-5" />
-              </Button>
-            </Link>
+            <Button size="lg" className="w-full sm:w-auto gap-2" onClick={() => setIsAuthModalOpen(true)}>
+              Start Building Free <ArrowRight className="w-5 h-5" />
+            </Button>
             <Button variant="secondary" size="lg" className="w-full sm:w-auto">
               View Live Demo
             </Button>

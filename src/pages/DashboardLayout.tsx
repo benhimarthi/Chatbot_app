@@ -3,6 +3,7 @@ import { Sidebar } from '../components/Sidebar';
 import { Navbar } from '../components/Navbar';
 
 export const DashboardLayout = () => {
+  console.log('DashboardLayout rendering');
   return (
     <div className="flex min-h-screen bg-gray-50/50">
       <Sidebar />
