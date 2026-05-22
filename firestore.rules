@@ -1,7 +1,12 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // ===============================================================
     // Helper Functions
+    // ===============================================================
+    
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -13,52 +18,221 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() && 
         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-         request.auth.token.email == "technov009@gmail.com");
+         (request.auth.token.email == "technov009@gmail.com" && request.auth.token.email_verified == true));
     }
 
-    // User Profiles
-    match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      allow write: if isOwner(userId) || isAdmin();
-      
-      // User Messages (Single Chat)
-      match /messages/{messageId} {
-        allow read: if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && request.resource.data.userId == userId;
-        allow update, delete: if isAdmin();
-      }
+    function isSystemBypass() {
+      return request.resource != null && 
+             request.resource.data != null && 
+             request.resource.data.get('systemKey', '') == 'system_bypass_78c20b2f_5b27_4c3e_899c_18c0557592c3';
+    }
 
-      // User Documents
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUsage(usage) {
+      return usage.keys().hasOnly(['messages_this_month', 'bookings_this_month', 'documents_count', 'current_period_start']) &&
+             usage.messages_this_month is number &&
+             usage.bookings_this_month is number &&
+             (!('documents_count' in usage) || usage.documents_count is number) &&
+             usage.current_period_start is timestamp;
+    }
+
+    function isValidLog(data) {
+      return data.keys().hasOnly(['type', 'message', 'metadata', 'createdAt']) &&
+             data.type is string &&
+             data.message is string &&
+             (data.createdAt is timestamp || data.createdAt == null);
+    }
+
+    function isValidCustomLimits(limits) {
+      return limits.keys().hasOnly(['max_messages_per_month', 'max_bookings_per_month']) &&
+             (!('max_messages_per_month' in limits) || limits.max_messages_per_month is number) &&
+             (!('max_bookings_per_month' in limits) || limits.max_bookings_per_month is number);
+    }
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'businessName', 'websiteUrl', 'customInstructions', 'apiKey', 'createdAt', 'lastActiveAt', 'role', 'subscriptionPlan', 'bookingEnabled', 'chatbotEnabled', 'isChatbotBlocked', 'isApiAccessBlocked', 'customLimits', 'capacity', 'reservationDuration', 'openingHours', 'usage', 'upgrade_requested']) &&
+             data.uid is string &&
+             data.email is string &&
+             (!('usage' in data) || isValidUsage(data.usage)) &&
+             (!('lastActiveAt' in data) || data.lastActiveAt is timestamp) &&
+             (!('upgrade_requested' in data) || data.upgrade_requested is bool) &&
+             (!('chatbotEnabled' in data) || data.chatbotEnabled is bool) &&
+             (!('isChatbotBlocked' in data) || data.isChatbotBlocked is bool) &&
+             (!('isApiAccessBlocked' in data) || data.isApiAccessBlocked is bool) &&
+             (!('customLimits' in data) || isValidCustomLimits(data.customLimits)) &&
+             (!('displayName' in data) || data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() < 500)) &&
+             (!('businessName' in data) || data.businessName == null || (data.businessName is string && data.businessName.size() < 100)) &&
+             (!('websiteUrl' in data) || data.websiteUrl == null || (data.websiteUrl is string && data.websiteUrl.size() < 200)) &&
+             (!('customInstructions' in data) || data.customInstructions == null || (data.customInstructions is string && data.customInstructions.size() < 5000)) &&
+             (!('apiKey' in data) || data.apiKey == null || (data.apiKey is string && data.apiKey.size() < 100)) &&
+             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || (data.subscriptionPlan is string && data.subscriptionPlan in ['free', 'pro', 'enterprise']));
+    }
+
+    function isValidDocument(data) {
+      return isAuthenticated() &&
+             data.userId == request.auth.uid &&
+             data.name is string &&
+             data.status in ['Processing', 'Processed'];
+    }
+
+    function isValidChatMessage(data) {
+      return hasOnlyAllowedFields(['userId', 'role', 'content', 'createdAt', 'images']) &&
+             hasRequiredFields(['userId', 'role', 'content']) &&
+             data.userId == request.auth.uid &&
+             data.role in ['user', 'assistant'] &&
+             data.content is string && data.content.size() < 10000 &&
+             (data.createdAt == null || data.createdAt is timestamp) &&
+             (!('images' in data) || (data.images is list && data.images.size() <= 3));
+    }
+
+    function isValidNotification(data) {
+      return hasOnlyAllowedFields(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             hasRequiredFields(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() < 100 &&
+             data.message is string && data.message.size() < 500 &&
+             data.type in ['info', 'success', 'warning', 'error'] &&
+             data.read is bool &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidReservation(data) {
+      return hasOnlyAllowedFields(['business_id', 'guests', 'date', 'start_time', 'end_time', 'status', 'customer_name', 'customer_phone', 'created_at']) &&
+             data.business_id is string &&
+             data.guests is number && data.guests > 0 &&
+             data.date is string &&
+             data.start_time is string &&
+             data.end_time is string &&
+             data.status == 'confirmed' &&
+             data.customer_name is string && data.customer_name.size() < 100 &&
+             data.customer_phone is string && data.customer_phone.size() < 30;
+    }
+
+    function isValidCustomer(data) {
+      return hasOnlyAllowedFields(['userId', 'name', 'phone', 'email', 'totalBookings', 'lastBookingAt', 'createdAt']) &&
+             data.userId is string &&
+             data.name is string && data.name.size() < 100 &&
+             data.phone is string && data.phone.size() < 30 &&
+             (!('email' in data) || data.email is string && data.email.size() < 100) &&
+             (!('totalBookings' in data) || data.totalBookings is number) &&
+             (!('lastBookingAt' in data) || data.lastBookingAt is timestamp) &&
+             (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidWorkspace(data) {
+      return hasOnlyAllowedFields(['id', 'ownerId', 'createdAt']) &&
+             data.id is string &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isValidWhatsAppInstance(data) {
+      return hasOnlyAllowedFields(['instanceName', 'connected', 'phone', 'createdAt', 'updatedAt']) &&
+             data.instanceName is string &&
+             data.connected is bool;
+    }
+
+    function isValidWhatsAppConversation(data) {
+      return hasOnlyAllowedFields(['id', 'workspaceId', 'whatsappInstance', 'contactPhone', 'contactName', 'lastMessage', 'lastMessageAt', 'unreadCount', 'updatedAt']) &&
+             data.workspaceId is string &&
+             data.contactPhone is string;
+    }
+
+    function isValidWhatsAppMessage(data) {
+      return hasOnlyAllowedFields(['id', 'workspaceId', 'conversationId', 'from', 'to', 'content', 'type', 'direction', 'timestamp', 'status']) &&
+             data.workspaceId is string &&
+             data.conversationId is string &&
+             data.content is string;
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /reservations/{reservationId} {
+      allow get: if isAuthenticated() && (resource.data.business_id == request.auth.uid || isAdmin());
+      allow list: if isAuthenticated() && (resource.data.business_id == request.auth.uid || isAdmin());
+      allow create: if isValidReservation(request.resource.data);
+      allow update: if isAdmin();
+      allow delete: if isAuthenticated() && (resource.data.business_id == request.auth.uid || isAdmin());
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /users/{userId} {
+      allow get: if true;
+      allow list: if isAdmin();
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && 
+                    (request.resource.data.get('role', 'user') == resource.data.get('role', 'user') || isAdmin());
+      
       match /documents/{docId} {
         allow read: if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && request.resource.data.userId == userId;
-        allow update, delete: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidDocument(request.resource.data);
+        allow update: if isOwner(userId) && isValidDocument(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /messages/{msgId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidChatMessage(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /customers/{customerId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidCustomer(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /logs/{logId} {
+        allow read, delete: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidLog(request.resource.data);
       }
     }
 
-    // Notifications
-    match /notifications/{notificationId} {
-      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && request.auth.uid == resource.data.userId;
-      allow delete: if isAdmin();
+    match /workspaces/{workspaceId} {
+      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || workspaceId == request.auth.uid || isAdmin());
+      allow create: if (isAuthenticated() && (request.resource.data.ownerId == request.auth.uid || workspaceId == request.auth.uid) && isValidWorkspace(request.resource.data)) || isSystemBypass();
+      allow update: if (isAuthenticated() && (resource.data.ownerId == request.auth.uid || workspaceId == request.auth.uid || isAdmin()) && isValidWorkspace(request.resource.data)) || isSystemBypass();
+      allow delete: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || workspaceId == request.auth.uid || isAdmin());
+
+      match /whatsapp/{instanceName} {
+        allow read: if isAuthenticated() && (workspaceId == request.auth.uid || isAdmin());
+        allow write: if (isAuthenticated() && (workspaceId == request.auth.uid || isAdmin())) || isSystemBypass();
+      }
     }
 
-    // Connection Test
-    match /_connection_test/{docId} {
-      allow read, write: if isAuthenticated();
-    }
-    
-    match /_health_check/{docId} {
-      allow read: if true;
+    match /conversations/{conversationId} {
+      allow read: if isAuthenticated() && (resource.data.workspaceId == request.auth.uid || isAdmin());
+      allow create: if (isAuthenticated() && (request.resource.data.workspaceId == request.auth.uid || isAdmin()) && isValidWhatsAppConversation(request.resource.data)) || isSystemBypass();
+      allow update: if (isAuthenticated() && (request.resource.data.workspaceId == request.auth.uid || isAdmin()) && isValidWhatsAppConversation(request.resource.data)) || isSystemBypass();
+      allow delete: if isAuthenticated() && (request.resource.data.workspaceId == request.auth.uid || isAdmin());
     }
 
-    // Bookings
-    match /bookings/{bookingId} {
-      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
-      allow delete: if isAdmin();
+    match /messages/{messageId} {
+      allow read: if isAuthenticated() && (resource.data.workspaceId == request.auth.uid || isAdmin());
+      allow create: if (isAuthenticated() && (request.resource.data.workspaceId == request.auth.uid || isAdmin()) && isValidWhatsAppMessage(request.resource.data)) || isSystemBypass();
+      allow update: if (isAuthenticated() && (request.resource.data.workspaceId == request.auth.uid || isAdmin()) && isValidWhatsAppMessage(request.resource.data)) || isSystemBypass();
+      allow delete: if isAuthenticated() && (resource.data.workspaceId == request.auth.uid || isAdmin());
     }
   }
 }

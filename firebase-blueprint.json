@@ -12,14 +12,61 @@
         "businessName": { "type": "string" },
         "customInstructions": { "type": "string" },
         "apiKey": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
         "createdAt": { "type": "object" },
-        "subscriptionPlan": { "type": "string", "enum": ["Free", "Pro", "Enterprise"] }
+        "subscriptionPlan": { "type": "string", "enum": ["free", "pro"] },
+        "bookingEnabled": { "type": "boolean" },
+        "chatbotEnabled": { "type": "boolean" },
+        "isChatbotBlocked": { "type": "boolean" },
+        "isApiAccessBlocked": { "type": "boolean" },
+        "capacity": { "type": "number" },
+        "reservationDuration": { "type": "number" },
+        "openingHours": {
+          "type": "object",
+          "properties": {
+            "start": { "type": "string" },
+            "end": { "type": "string" }
+          }
+        }
       },
       "required": ["uid", "email"]
     },
-    "Message": {
-      "title": "Message",
-      "description": "A message in the single chat conversation.",
+    "Reservation": {
+      "title": "Reservation",
+      "description": "A confirmed restaurant reservation.",
+      "type": "object",
+      "properties": {
+        "business_id": { "type": "string" },
+        "guests": { "type": "number" },
+        "date": { "type": "string", "format": "date" },
+        "start_time": { "type": "string" },
+        "end_time": { "type": "string" },
+        "status": { "type": "string", "enum": ["confirmed"] },
+        "customer_name": { "type": "string" },
+        "customer_phone": { "type": "string" },
+        "created_at": { "type": "object" }
+      },
+      "required": ["business_id", "guests", "date", "start_time", "end_time", "status", "customer_name", "customer_phone"]
+    },
+    "Document": {
+      "title": "Document",
+      "description": "A document uploaded by a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "size": { "type": "string" },
+        "status": { "type": "string", "enum": ["Processing", "Processed"] },
+        "type": { "type": "string" },
+        "content": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["userId", "name", "status"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "A message in a chat conversation.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
@@ -28,22 +75,6 @@
         "createdAt": { "type": "object" }
       },
       "required": ["userId", "role", "content"]
-    },
-    "Document": {
-      "title": "Document",
-      "description": "A document uploaded by a user for RAG processing.",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "title": { "type": "string" },
-        "fileType": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "processing", "processed", "error"] },
-        "chunkCount": { "type": "number" },
-        "createdAt": { "type": "object" },
-        "updatedAt": { "type": "object" },
-        "error": { "type": "string" }
-      },
-      "required": ["userId", "title", "fileType", "status", "createdAt"]
     },
     "Notification": {
       "title": "Notification",
@@ -59,18 +90,78 @@
       },
       "required": ["userId", "title", "message", "type", "read", "createdAt"]
     },
-    "Booking": {
-      "title": "Booking",
-      "description": "A hotel or restaurant booking.",
+    "Customer": {
+      "title": "Customer",
+      "description": "A customer of a business using the service.",
       "type": "object",
       "properties": {
-        "userId": { "type": "string", "description": "The business owner's UID." },
-        "type": { "type": "string", "enum": ["restaurant", "hotel"] },
-        "data": { "type": "object", "description": "The collected booking details." },
-        "status": { "type": "string", "enum": ["confirmed", "cancelled", "pending"] },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "totalBookings": { "type": "number" },
+        "lastBookingAt": { "type": "object" },
         "createdAt": { "type": "object" }
       },
-      "required": ["userId", "type", "data", "status", "createdAt"]
+      "required": ["userId", "name", "phone"]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "A business workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "ownerId"]
+    },
+    "WhatsAppInstance": {
+      "title": "WhatsAppInstance",
+      "description": "An Evolution API WhatsApp instance configuration.",
+      "type": "object",
+      "properties": {
+        "instanceName": { "type": "string" },
+        "connected": { "type": "boolean" },
+        "phone": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["instanceName", "connected"]
+    },
+    "WhatsAppConversation": {
+      "title": "WhatsAppConversation",
+      "description": "A normalized conversation representing a WhatsApp contact chat.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "whatsappInstance": { "type": "string" },
+        "contactPhone": { "type": "string" },
+        "contactName": { "type": "string" },
+        "lastMessage": { "type": "string" },
+        "lastMessageAt": { "type": "object" },
+        "unreadCount": { "type": "number" },
+        "updatedAt": { "type": "object" }
+      },
+      "required": ["id", "workspaceId", "whatsappInstance", "contactPhone"]
+    },
+    "WhatsAppMessage": {
+      "title": "WhatsAppMessage",
+      "description": "A normalized incoming or outgoing message.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "conversationId": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "content": { "type": "string" },
+        "type": { "type": "string" },
+        "direction": { "type": "string", "enum": ["incoming", "outgoing"] },
+        "timestamp": { "type": "object" },
+        "status": { "type": "string", "enum": ["sent", "received", "read", "pending"] }
+      },
+      "required": ["id", "workspaceId", "conversationId", "direction", "content", "timestamp"]
     }
   },
   "firestore": {
@@ -78,21 +169,45 @@
       "schema": "User",
       "description": "User profiles."
     },
-    "/users/{userId}/messages/{msgId}": {
-      "schema": "Message",
-      "description": "Messages for the user's single chat."
-    },
     "/users/{userId}/documents/{docId}": {
       "schema": "Document",
-      "description": "User uploaded documents for RAG."
+      "description": "User documents."
+    },
+    "/users/{userId}/messages/{msgId}": {
+      "schema": "ChatMessage",
+      "description": "User chat messages."
+    },
+    "/users/{userId}/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Business customers."
+    },
+    "/reservations/{reservationId}": {
+      "schema": "Reservation",
+      "description": "Global collection of reservations."
     },
     "/notifications/{notificationId}": {
       "schema": "Notification",
       "description": "Collection of notifications for all users."
     },
-    "/bookings/{bookingId}": {
-      "schema": "Booking",
-      "description": "Global collection of bookings."
+    "/admins/{adminId}": {
+      "schema": "User",
+      "description": "Platform administrators (UID corresponds to users collection)."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": "Workspace",
+      "description": "Workspaces mapped by workspace ID (typically user ID)."
+    },
+    "/workspaces/{workspaceId}/whatsapp/{instanceName}": {
+      "schema": "WhatsAppInstance",
+      "description": "WhatsApp Connection instance state for each workspace."
+    },
+    "/conversations/{conversationId}": {
+      "schema": "WhatsAppConversation",
+      "description": "Normalized user conversation headers."
+    },
+    "/messages/{messageId}": {
+      "schema": "WhatsAppMessage",
+      "description": "Normalized individual messages."
     }
   }
 }

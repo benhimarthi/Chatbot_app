@@ -1,10 +1,10 @@
 import * as React from 'react';
 import { useState, useEffect } from 'react';
-import { Save, Globe, Lock, Key, Loader2, CheckCircle2, AlertCircle, RotateCcw, UserCircle, Sparkles } from 'lucide-react';
+import { Save, Globe, Lock, Key, Loader2, CheckCircle2, AlertCircle, RotateCcw, UserCircle, TrendingUp } from 'lucide-react';
 import { Card, CustomButton as Button } from '../components/UI';
-import { auth, getUserSettings, updateUserSettings } from '../firebase';
+import { auth, getUserSettings, updateUserSettings, requestUpgrade } from '../firebase';
 import { ProfileModal } from '../components/ProfileModal';
-import { SUBSCRIPTION_LIMITS, SubscriptionPlan } from '../constants/subscriptions';
+import { PLANS, UserSettings } from '../types';
 
 export const SettingsPage = () => {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -12,30 +12,48 @@ export const SettingsPage = () => {
     businessName: '',
     websiteUrl: '',
     customInstructions: '',
-    apiKey: ''
+    apiKey: '',
+    bookingEnabled: false,
+    capacity: 20,
+    reservationDuration: 90,
+    openingHours: {
+      start: '09:00',
+      end: '22:00'
+    }
   });
   const [originalSettings, setOriginalSettings] = useState({
     businessName: '',
     websiteUrl: '',
     customInstructions: '',
-    apiKey: ''
+    apiKey: '',
+    bookingEnabled: false,
+    capacity: 20,
+    reservationDuration: 90,
+    openingHours: {
+      start: '09:00',
+      end: '22:00'
+    }
   });
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [isLoading, setIsLoading] = useState(true);
-
-  const plan: SubscriptionPlan = (settings as any).subscriptionPlan?.toLowerCase() || 'free';
+  const [userData, setUserData] = useState<UserSettings | null>(null);
+  const [isUpgrading, setIsUpgrading] = useState(false);
 
   useEffect(() => {
     if (!auth.currentUser) return;
 
     const unsubscribe = getUserSettings(auth.currentUser.uid, (data) => {
+      setUserData(data);
       const loadedSettings = {
         businessName: data.businessName || '',
         websiteUrl: data.websiteUrl || '',
         customInstructions: data.customInstructions || '',
         apiKey: data.apiKey || '',
-        subscriptionPlan: data.subscriptionPlan || 'free'
+        bookingEnabled: data.bookingEnabled || false,
+        capacity: data.capacity || 20,
+        reservationDuration: data.reservationDuration || 90,
+        openingHours: data.openingHours || { start: '09:00', end: '22:00' }
       };
       setSettings(loadedSettings);
       setOriginalSettings(loadedSettings);
@@ -44,15 +62,6 @@ export const SettingsPage = () => {
 
     return () => unsubscribe();
   }, []);
-
-  const handlePlanChange = async (newPlan: SubscriptionPlan) => {
-    if (!auth.currentUser) return;
-    try {
-      await updateUserSettings(auth.currentUser.uid, { subscriptionPlan: newPlan });
-    } catch (error) {
-      console.error('Error updating plan:', error);
-    }
-  };
 
   const handleSave = async () => {
     if (!auth.currentUser) return;
@@ -73,6 +82,21 @@ export const SettingsPage = () => {
     }
   };
 
+  const handleRequestUpgrade = async () => {
+    if (!auth.currentUser) return;
+    setIsUpgrading(true);
+    try {
+      await requestUpgrade(auth.currentUser.uid);
+      setSaveStatus('success');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (error) {
+      console.error('Error requesting upgrade:', error);
+    } finally {
+      setIsUpgrading(false);
+    }
+  };
+
+  const currentPlan = PLANS[userData?.subscriptionPlan] || PLANS.free;
   const hasChanges = JSON.stringify(settings) !== JSON.stringify(originalSettings);
 
   if (isLoading) {
@@ -142,38 +166,133 @@ export const SettingsPage = () => {
         </Card>
 
         <Card className="space-y-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center">
-              <Sparkles className="w-4 h-4 text-indigo-600" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-emerald-50 rounded-lg flex items-center justify-center">
+                <Globe className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900">Reservations</h3>
+                <p className="text-xs text-gray-400">Enable and configure online table bookings.</p>
+              </div>
             </div>
-            <h3 className="font-bold text-gray-900">Subscription Plan</h3>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input 
+                type="checkbox" 
+                className="sr-only peer"
+                checked={settings.bookingEnabled}
+                onChange={(e) => setSettings({ ...settings, bookingEnabled: e.target.checked })}
+              />
+              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+            </label>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {(Object.keys(SUBSCRIPTION_LIMITS) as SubscriptionPlan[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => handlePlanChange(p)}
-                className={`p-4 rounded-2xl border-2 text-left transition-all ${
-                  plan === p 
-                  ? "border-indigo-600 bg-indigo-50/50" 
-                  : "border-gray-100 hover:border-gray-200 bg-white"
-                }`}
+          {settings.bookingEnabled && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-gray-100 animate-in fade-in slide-in-from-top-2">
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700">Total Capacity</label>
+                <input
+                  type="number"
+                  value={settings.capacity}
+                  onChange={(e) => setSettings({ ...settings, capacity: parseInt(e.target.value) || 0 })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700">Reservation Duration (min)</label>
+                <input
+                  type="number"
+                  value={settings.reservationDuration}
+                  onChange={(e) => setSettings({ ...settings, reservationDuration: parseInt(e.target.value) || 0 })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700">Opening Time</label>
+                <input
+                  type="time"
+                  value={settings.openingHours.start}
+                  onChange={(e) => setSettings({ ...settings, openingHours: { ...settings.openingHours, start: e.target.value } })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700">Closing Time</label>
+                <input
+                  type="time"
+                  value={settings.openingHours.end}
+                  onChange={(e) => setSettings({ ...settings, openingHours: { ...settings.openingHours, end: e.target.value } })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all text-sm"
+                />
+              </div>
+            </div>
+          )}
+        </Card>
+
+        <Card className="space-y-6">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center">
+                <TrendingUp className="w-4 h-4 text-indigo-600" />
+              </div>
+              <h3 className="font-bold text-gray-900">Usage & Subscription</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-1 bg-indigo-50 text-indigo-700 text-[10px] font-bold uppercase rounded-md tracking-wider">
+                {currentPlan.name} Plan
+              </span>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1">Messages This Month</label>
+              <div className="flex items-baseline gap-2">
+                <span className="text-xl font-bold text-gray-900">{userData?.usage?.messages_this_month || 0}</span>
+                <span className="text-xs text-gray-400">/ {currentPlan.max_messages_per_month.toLocaleString()}</span>
+              </div>
+              <div className="mt-2 w-full bg-gray-200 h-1 rounded-full overflow-hidden">
+                <div 
+                  className="bg-indigo-600 h-full transition-all duration-500" 
+                  style={{ width: `${Math.min(((userData?.usage?.messages_this_month || 0) / currentPlan.max_messages_per_month) * 100, 100)}%` }}
+                ></div>
+              </div>
+            </div>
+            <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1">Bookings This Month</label>
+              <div className="flex items-baseline gap-2">
+                <span className="text-xl font-bold text-gray-900">{userData?.usage?.bookings_this_month || 0}</span>
+                <span className="text-xs text-gray-400">/ {currentPlan.max_bookings_per_month.toLocaleString()}</span>
+              </div>
+              <div className="mt-2 w-full bg-gray-200 h-1 rounded-full overflow-hidden">
+                <div 
+                  className="bg-emerald-500 h-full transition-all duration-500" 
+                  style={{ width: `${Math.min(((userData?.usage?.bookings_this_month || 0) / currentPlan.max_bookings_per_month) * 100, 100)}%` }}
+                ></div>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-indigo-50/50 rounded-xl border border-indigo-100 flex items-center justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-bold text-indigo-900">Need higher limits?</h4>
+              <p className="text-xs text-indigo-700 mt-0.5">Upgrade to the Pro plan for up to 5,000 messages and 1,000 bookings.</p>
+            </div>
+            {userData?.upgrade_requested ? (
+              <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs bg-white px-3 py-1.5 rounded-lg border border-indigo-100 italic">
+                <CheckCircle2 className="w-4 h-4" />
+                Upgrade Requested
+              </div>
+            ) : (
+              <Button 
+                onClick={handleRequestUpgrade}
+                disabled={isUpgrading}
+                size="sm"
+                className="whitespace-nowrap"
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-bold capitalize">{p}</span>
-                  {plan === p && <CheckCircle2 className="w-4 h-4 text-indigo-600" />}
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">
-                    {SUBSCRIPTION_LIMITS[p].maxChats === Infinity ? 'Unlimited' : `${SUBSCRIPTION_LIMITS[p].maxChats} Chats`}
-                  </p>
-                  <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">
-                    {SUBSCRIPTION_LIMITS[p].maxDocsPerChat === Infinity ? 'All Docs' : `${SUBSCRIPTION_LIMITS[p].maxDocsPerChat} Docs/Chat`}
-                  </p>
-                </div>
-              </button>
-            ))}
+                {isUpgrading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Request Upgrade"}
+              </Button>
+            )}
           </div>
         </Card>
 
@@ -184,7 +303,6 @@ export const SettingsPage = () => {
             </div>
             <h3 className="font-bold text-gray-900">API Configuration</h3>
           </div>
-
           <div className="space-y-2">
             <label className="text-sm font-semibold text-gray-700">Gemini API Key (Optional)</label>
             <div className="relative flex items-center">

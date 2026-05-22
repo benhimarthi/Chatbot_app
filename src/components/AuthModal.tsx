@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Bot, Mail, Chrome, ArrowRight, Loader2 } from 'lucide-react';
+import { X, Mail, Chrome, ArrowRight, Loader2 } from 'lucide-react';
 import { CustomButton as Button } from './UI';
 import { signInWithGoogle } from '../firebase';
 import { useNavigate } from 'react-router-dom';
@@ -57,10 +57,7 @@ export const AuthModal = ({ isOpen, onClose }: AuthModalProps) => {
             </button>
 
             <div className="p-8 pt-12 text-center">
-              <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-indigo-200">
-                <Bot className="text-white w-8 h-8" />
-              </div>
-              <h2 className="text-2xl font-extrabold text-gray-900 tracking-tight">Welcome to ChatFlow</h2>
+              <h2 className="text-2xl font-extrabold text-gray-900 tracking-tight">Welcome to Chat<span className="text-indigo-600">Flow</span></h2>
               <p className="text-gray-500 mt-2">Build your custom AI chatbot in minutes.</p>
 
               <div className="mt-10 space-y-4">

@@ -1,0 +1,19 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for ChatFlow WhatsApp Webhook Handling and Chatbot Automation",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-functions": "^6.2.0",
+    "firebase-admin": "^12.7.0",
+    "axios": "^1.7.9",
+    "@google/genai": "^1.29.0"
+  },
+  "devDependencies": {
+    "firebase-functions-test": "^3.1.0"
+  }
+}

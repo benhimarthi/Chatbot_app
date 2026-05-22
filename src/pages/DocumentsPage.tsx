@@ -16,21 +16,19 @@ import {
 } from 'lucide-react';
 import { Card, CustomButton as Button } from '../components/UI';
 import { FileUpload } from '../components/FileUpload';
-import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { auth, getDocuments, updateDocument, deleteDocument } from '../firebase';
 import { cn } from '../lib/utils';
-import { upsertDocumentToPinecone } from '../services/ragService';
+import { upsertDocumentToPinecone, deleteDocumentFromPinecone } from '../services/ragService';
 import { motion, AnimatePresence } from 'motion/react';
+import axios from 'axios';
 
 export const DocumentsPage = () => {
   const [documents, setDocuments] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isIndexing, setIsIndexing] = useState(false);
-  const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; docId: string | null; docName: string }>({
-    isOpen: false,
-    docId: null,
-    docName: ''
-  });
+  const [isWiping, setIsWiping] = useState(false);
+  const [showConfirmWipe, setShowConfirmWipe] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
@@ -69,17 +67,48 @@ export const DocumentsPage = () => {
     }
   };
 
-  const handleDelete = async () => {
-    if (!auth.currentUser || !deleteModal.docId) return;
-    
+  const handleDelete = async (docId: string) => {
+    if (!auth.currentUser) return;
+
     setIsDeleting(true);
     try {
-      await deleteDocument(auth.currentUser.uid, deleteModal.docId);
-      setDeleteModal({ isOpen: false, docId: null, docName: '' });
+      // 1. Delete from Firestore
+      await deleteDocument(auth.currentUser.uid!, docId);
+      
+      // 2. Delete from Pinecone
+      await deleteDocumentFromPinecone(auth.currentUser.uid!, docId);
+      
+      setConfirmDeleteId(null);
     } catch (error) {
       console.error("Delete error:", error);
+      alert("Failed to delete document.");
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleWipeKnowledgeBase = async () => {
+    if (!auth.currentUser) return;
+    
+    setIsWiping(true);
+    try {
+      // 1. Wipe Pinecone for this user
+      await axios.post('/api/rag/delete', {
+        filter: { userId: { "$eq": auth.currentUser.uid } }
+      });
+
+      // 2. Delete all documents from Firestore
+      for (const doc of documents) {
+        await deleteDocument(auth.currentUser.uid, doc.id);
+      }
+
+      setShowConfirmWipe(false);
+      alert("Knowledge Base cleared successfully!");
+    } catch (error) {
+      console.error("Wipe error:", error);
+      alert("Failed to clear Knowledge Base completely.");
+    } finally {
+      setIsWiping(false);
     }
   };
 
@@ -91,6 +120,34 @@ export const DocumentsPage = () => {
           <p className="text-gray-500 mt-1">Upload documents and URLs to train your AI.</p>
         </div>
         <div className="flex items-center gap-2">
+          {showConfirmWipe ? (
+            <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100 animate-in fade-in zoom-in duration-200">
+              <button 
+                onClick={handleWipeKnowledgeBase}
+                disabled={isWiping}
+                className="px-3 py-1.5 bg-red-600 text-white rounded-md text-xs font-bold uppercase hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {isWiping ? "Clearing..." : "Confirm Wipe"}
+              </button>
+              <button 
+                onClick={() => setShowConfirmWipe(false)}
+                disabled={isWiping}
+                className="px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded-md text-xs font-bold uppercase hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <Button 
+              variant="outline"
+              className="text-red-600 border-red-100 hover:bg-red-50"
+              onClick={() => setShowConfirmWipe(true)}
+              disabled={documents.length === 0 || isIndexing || isWiping}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Wipe Everything
+            </Button>
+          )}
           <Button 
             variant="outline" 
             onClick={handleReindexAll}
@@ -174,13 +231,34 @@ export const DocumentsPage = () => {
                           </div>
                         </div>
                       </div>
-                      <button 
-                        onClick={() => setDeleteModal({ isOpen: true, docId: doc.id, docName: doc.name })}
-                        className="text-gray-400 hover:text-rose-600 p-2 transition-colors"
-                        title="Delete Source"
-                      >
-                        <Trash2 className="w-5 h-5" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {confirmDeleteId === doc.id ? (
+                          <div className="flex items-center gap-1 bg-white p-1 rounded-lg border border-red-100 animate-in fade-in zoom-in duration-200">
+                            <button 
+                              onClick={() => handleDelete(doc.id)}
+                              disabled={isDeleting}
+                              className="px-3 py-1.5 bg-red-600 text-white rounded-md text-[10px] font-bold uppercase hover:bg-red-700 transition-colors disabled:opacity-50"
+                            >
+                              {isDeleting ? "Deleting..." : "Confirm"}
+                            </button>
+                            <button 
+                              onClick={() => setConfirmDeleteId(null)}
+                              disabled={isDeleting}
+                              className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-md text-[10px] font-bold uppercase hover:bg-gray-200 transition-colors disabled:opacity-50"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button 
+                            onClick={() => setConfirmDeleteId(doc.id)}
+                            className="text-gray-400 hover:text-rose-600 p-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Delete Source"
+                          >
+                            <Trash2 className="w-5 h-5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -188,15 +266,6 @@ export const DocumentsPage = () => {
             </Card>
           </div>
         </div>
-
-      <DeleteConfirmModal 
-        isOpen={deleteModal.isOpen}
-        onClose={() => setDeleteModal({ ...deleteModal, isOpen: false })}
-        onConfirm={handleDelete}
-        title="Delete Source"
-        message={`Are you sure you want to delete "${deleteModal.docName}"? This action cannot be undone.`}
-        isLoading={isDeleting}
-      />
     </div>
   );
 };

@@ -31,7 +31,6 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public render() {
     if (this.state.hasError) {
-      console.log('ErrorBoundary caught error:', this.state.error);
       let errorMessage = "An unexpected error occurred.";
       
       try {

@@ -2,13 +2,13 @@ import * as React from 'react';
 import { Send, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import Markdown from 'react-markdown';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  images?: { url: string; alt: string }[];
 }
 
 export const ChatMessage = ({ message }: { message: Message; key?: string }) => {
@@ -25,57 +25,41 @@ export const ChatMessage = ({ message }: { message: Message; key?: string }) => 
     >
       <div
         className={cn(
-          'max-w-[85%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm',
+          'max-w-[80%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm',
           isAssistant
             ? 'bg-white border border-gray-100 text-gray-800 rounded-bl-none'
             : 'bg-indigo-600 text-white rounded-br-none'
         )}
       >
-        <div className={cn(
-          'markdown-body',
-          !isAssistant && 'text-white'
-        )}>
-          <ReactMarkdown 
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ node, inline, className, children, ...props }: any) {
-                if (inline) {
-                  return (
-                    <code className={cn(
-                      'px-1.5 py-0.5 rounded font-mono text-xs',
-                      isAssistant ? 'bg-gray-100 text-indigo-600' : 'bg-indigo-500 text-white'
-                    )} {...props}>
-                      {children}
-                    </code>
-                  );
-                }
-                return (
-                  <pre className={cn(
-                    'p-4 rounded-xl font-mono text-xs overflow-x-auto my-3',
-                    isAssistant ? 'bg-gray-900 text-gray-100' : 'bg-indigo-700 text-white'
-                  )}>
-                    <code {...props}>{children}</code>
-                  </pre>
-                );
-              },
-              a({ node, ...props }: any) {
-                return (
-                  <a 
-                    className={cn(
-                      'underline transition-opacity hover:opacity-80',
-                      isAssistant ? 'text-indigo-600' : 'text-white'
-                    )} 
-                    target="_blank" 
-                    rel="noopener noreferrer" 
-                    {...props} 
-                  />
-                );
-              }
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
-        </div>
+        {isAssistant ? (
+          <div className="space-y-4">
+            <div className="markdown-body prose prose-sm max-w-none prose-indigo">
+              <Markdown>{message.content}</Markdown>
+            </div>
+            
+            {message.images && message.images.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 pt-4 border-t border-gray-50">
+                {message.images.map((img, idx) => (
+                  <div key={idx} className="group relative rounded-xl overflow-hidden bg-gray-50 border border-gray-100 aspect-video">
+                    <img 
+                      src={img.url} 
+                      alt={img.alt || 'Relevant image'} 
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
+                    />
+                    {img.alt && (
+                      <div className="absolute inset-x-0 bottom-0 p-2 bg-black/50 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity">
+                        <p className="text-[10px] text-white truncate">{img.alt}</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          message.content
+        )}
       </div>
     </motion.div>
   );

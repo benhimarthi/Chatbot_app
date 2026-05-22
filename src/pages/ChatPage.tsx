@@ -3,16 +3,17 @@ import { useState, useEffect, useRef } from 'react';
 import { ChatMessage, ChatInput } from '../components/Chat';
 import { Bot, Sparkles, Loader2, Wallet, FileText, User, Settings, Trash2 } from 'lucide-react';
 import Markdown from 'react-markdown';
-import { auth, addChatMessage, getChatMessages, getDocuments, getUserSettings, clearChatHistory } from '../firebase';
-import { generateRagResponse } from '../services/ragService';
-import { BookingState, processBookingIntent, saveBooking, validateConstraints } from '../services/bookingService';
-import { BookingConfirmationModal } from '../components/BookingConfirmationModal';
-import { GoogleGenAI } from "@google/genai";
+import { auth, addChatMessage, getChatMessages, getDocuments, getUserSettings, clearChatHistory, addReservation, incrementMessageUsage, incrementBookingUsage, logEvent } from '../firebase';
+import { getNextStep, validateReservationField, checkAvailability, suggestAlternatives } from '../services/reservationService';
+import { ReservationState, ReservationDraft, ReservationStep, PLANS } from '../types';
+import { ReservationWidget } from '../components/ReservationWidget';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  images?: { url: string; alt: string }[];
+  isReservationWidget?: boolean;
 }
 
 export const ChatPage = () => {
@@ -20,15 +21,17 @@ export const ChatPage = () => {
   const [documents, setDocuments] = useState<any[]>([]);
   const [settings, setSettings] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [showConfirmClear, setShowConfirmClear] = useState(false);
   const [useRag, setUseRag] = useState(true);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [bookingState, setBookingState] = useState<BookingState>({
-    type: null,
-    collectedData: {},
-    missingFields: [],
-    isComplete: false
+  
+  // Reservation State
+  const [reservationState, setReservationState] = useState<ReservationState>({
+    step: 'ask_guests',
+    data: { guests: null, date: null, time: null, name: null, phone: null },
+    isActive: false
   });
-  const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -68,125 +71,249 @@ export const ChatPage = () => {
     if (!auth.currentUser || !content.trim()) return;
 
     const userId = auth.currentUser.uid;
-
-    const userMsg = { 
-      userId,
-      role: 'user' as const, 
-      content 
-    };
-    
+    const userMsg = { userId, role: 'user' as const, content };
     await addChatMessage(userId, userMsg);
+    logEvent(userId, 'message', `User sent message: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`);
     setIsLoading(true);
 
     try {
-      let aiResponse = "";
+      const plan = PLANS[settings?.subscriptionPlan] || PLANS.free;
+      const usage = settings?.usage || { messages_this_month: 0, bookings_this_month: 0 };
 
-      // 1. Process Booking Intent
-      const updatedBooking = await processBookingIntent(content, bookingState, settings?.customInstructions || "");
-      
-      if (updatedBooking.type) {
-        setBookingState(updatedBooking);
-        
-        if (updatedBooking.isComplete) {
-          // Validate constraints before showing modal
-          const validation = await validateConstraints(updatedBooking.type, updatedBooking.collectedData);
-          if (validation.valid) {
-            setIsBookingModalOpen(true);
-            aiResponse = `Great! I've collected all the details for your ${updatedBooking.type} booking. Please review the confirmation summary that just popped up.`;
-          } else {
-            aiResponse = `I've collected your details, but there's an issue: ${validation.message}. How would you like to proceed?`;
-          }
-        } else {
-          // Ask for missing fields
-          const nextField = updatedBooking.missingFields[0].replace(/_/g, ' ');
-          aiResponse = `I'm helping you with your ${updatedBooking.type} booking. Could you please provide the **${nextField}**?`;
-        }
-      } else if (useRag) {
-        // Use the RAG pipeline for general document data
-        aiResponse = await generateRagResponse(userId, content, messages);
-      } else {
-        // Fallback to general chat with document context
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-        
-        const context = documents
-          .filter(doc => doc.status === 'Processed')
-          .map(doc => `Source: ${doc.name}\nContent: ${doc.content || ''}`)
-          .join('\n\n---\n\n');
-
-        const systemInstruction = `
-          You are a helpful AI assistant.
-          ${settings?.customInstructions || ''}
-          
-          Use the following context from the user's uploaded documents to answer their questions.
-          
-          Context:
-          ${context}
-        `;
-
-        const result = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: [{ role: 'user', parts: [{ text: content }] }],
-          config: {
-            systemInstruction: systemInstruction,
-          },
-        });
-        aiResponse = result.text;
+      // Check message limit
+      if (usage.messages_this_month >= plan.max_messages_per_month) {
+        await addAssistantMessage(userId, "You’ve reached your monthly message limit. Upgrade to continue.");
+        setIsLoading(false);
+        return;
       }
 
-      const aiMsg = {
-        userId,
-        role: 'assistant' as const,
-        content: aiResponse || "I'm sorry, I couldn't generate a response."
-      };
+      // 1. Check if we should enter or continue reservation flow
+      if (settings?.bookingEnabled && !reservationState.isActive) {
+        const intentRes = await fetch('/api/reservation/detect-intent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: content })
+        });
+        const { isBooking } = await intentRes.json();
 
-      await addChatMessage(userId, aiMsg);
-    } catch (error) {
-      console.error('Error generating AI response:', error);
-      const errorMsg = {
+        if (isBooking) {
+          const extractRes = await fetch('/api/reservation/extract-details', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: content, currentDraft: reservationState.data })
+          });
+          const extracted = await extractRes.json();
+
+          const newState = {
+            ...reservationState,
+            isActive: true,
+            data: { ...reservationState.data, ...extracted }
+          };
+          const nextStep = getNextStep(newState.data);
+          newState.step = nextStep;
+          setReservationState(newState);
+          
+          await addAssistantMessage(userId, getStepMessage(nextStep, newState.data));
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      // 2. Handle active reservation flow
+      if (reservationState.isActive) {
+        const extractRes = await fetch('/api/reservation/extract-details', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: content, currentDraft: reservationState.data })
+        });
+        const extracted = await extractRes.json();
+        const updatedData = { ...reservationState.data, ...extracted };
+        
+        // Validate specifically the field we might have just gotten
+        let validationError = "";
+        for (const [key, value] of Object.entries(extracted)) {
+          const validation = validateReservationField(key as any, value, settings);
+          if (!validation.valid) {
+            validationError = validation.message || "Invalid input.";
+            break;
+          }
+        }
+
+        if (validationError) {
+          await addAssistantMessage(userId, validationError);
+          setIsLoading(false);
+          return;
+        }
+
+        const nextStep = getNextStep(updatedData);
+        
+        // If we have date, time, and guests, check availability
+        if (updatedData.guests && updatedData.date && updatedData.time) {
+          const { available } = await checkAvailability(userId, updatedData.guests, updatedData.date, updatedData.time, settings);
+          if (!available) {
+            const alternatives = await suggestAlternatives(userId, updatedData.guests, updatedData.date, updatedData.time, settings);
+            const altMsg = alternatives.length > 0 
+              ? `Sorry, we are fully booked for ${updatedData.time}. However, we have availability at: ${alternatives.join(', ')}. Which one would you prefer?`
+              : `Sorry, we are fully booked for that time and no nearby slots are available. Would you like to try another date?`;
+            
+            // Revert the time so it asks again
+            updatedData.time = null;
+            setReservationState({ ...reservationState, data: updatedData, step: 'ask_time' });
+            await addAssistantMessage(userId, altMsg);
+            setIsLoading(false);
+            return;
+          }
+        }
+
+        setReservationState({
+          ...reservationState,
+          data: updatedData,
+          step: nextStep
+        });
+
+        await addAssistantMessage(userId, getStepMessage(nextStep, updatedData));
+        setIsLoading(false);
+        return;
+      }
+
+      // 3. Normal RAG flow
+      let aiResponseText = "";
+      let aiImages: { url: string; alt: string }[] = [];
+
+      const chatResponse = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: userId,
+          message: content,
+          useRag: useRag,
+          documents: documents,
+          customInstructions: settings?.customInstructions
+        })
+      });
+      const chatData = await chatResponse.json();
+      if (chatData.error) throw new Error(chatData.error);
+      aiResponseText = chatData.text;
+      aiImages = chatData.images || [];
+
+      await incrementMessageUsage(userId);
+
+      await addChatMessage(userId, {
         userId,
-        role: 'assistant' as const,
-        content: "I encountered an error while processing your request. Please ensure your documents are indexed and try again."
-      };
-      await addChatMessage(userId, errorMsg);
+        role: 'assistant',
+        content: aiResponseText || "I'm sorry, I couldn't generate a response.",
+        images: aiImages
+      });
+    } catch (error) {
+      console.error('Error in chat processing:', error);
+      await addAssistantMessage(userId, "I encountered an error. Please try again.");
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const addAssistantMessage = async (userId: string, content: string) => {
+    await addChatMessage(userId, {
+      userId,
+      role: 'assistant',
+      content
+    });
+  };
+
+  const getStepMessage = (step: ReservationStep, data: ReservationDraft): string => {
+    switch (step) {
+      case 'ask_guests': return "How many guests will be joining us?";
+      case 'ask_date': return "For which date would you like to book?";
+      case 'ask_time': return "What time would you like to arrive?";
+      case 'ask_name': return "Under what name should I place the reservation?";
+      case 'ask_phone': return "Could I have a contact phone number for the booking?";
+      case 'confirm': return "Great! I have all the details. Please review and confirm your reservation below:";
+      case 'completed': return "Your reservation has been confirmed! We look forward to seeing you.";
+      default: return "How can I help you today?";
+    }
+  };
+
+  const handleConfirmReservation = async () => {
+    if (!auth.currentUser || !reservationState.data.guests || !reservationState.data.date || !reservationState.data.time || !reservationState.data.name || !reservationState.data.phone) return;
+    
+    setIsLoading(true);
+    try {
+      const userId = auth.currentUser.uid;
+      const plan = PLANS[settings?.subscriptionPlan] || PLANS.free;
+      const usage = settings?.usage || { messages_this_month: 0, bookings_this_month: 0 };
+
+      if (usage.bookings_this_month >= plan.max_bookings_per_month) {
+        await addAssistantMessage(userId, "You’ve reached your monthly booking limit. Upgrade to accept more reservations.");
+        setIsLoading(false);
+        return;
+      }
+
+      const startTime = reservationState.data.time;
+      const [h, m] = startTime.split(':').map(Number);
+      const startVal = h * 60 + m;
+      const endVal = startVal + settings.reservationDuration;
+      const endTime = `${Math.floor(endVal / 60).toString().padStart(2, '0')}:${(endVal % 60).toString().padStart(2, '0')}`;
+
+      await addReservation({
+        business_id: auth.currentUser.uid,
+        guests: reservationState.data.guests,
+        date: reservationState.data.date,
+        start_time: startTime,
+        end_time: endTime,
+        status: 'confirmed',
+        customer_name: reservationState.data.name,
+        customer_phone: reservationState.data.phone
+      });
+
+      logEvent(auth.currentUser.uid, 'booking', `New reservation confirmed for ${reservationState.data.name} on ${reservationState.data.date}`, {
+        guests: reservationState.data.guests,
+        time: startTime
+      });
+
+      await incrementBookingUsage(auth.currentUser.uid);
+
+      setReservationState({
+        isActive: false,
+        step: 'completed',
+        data: { guests: null, date: null, time: null, name: null, phone: null }
+      });
+
+      await addAssistantMessage(auth.currentUser.uid, "Thank you! Your booking is secured. I've sent a notification to the manager.");
+    } catch (e) {
+      console.error("Booking failed", e);
+      alert("Failed to confirm reservation. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancelReservation = () => {
+    setReservationState({
+      isActive: false,
+      step: 'ask_guests',
+      data: { guests: null, date: null, time: null, name: null, phone: null }
+    });
+  };
+
+  const handleEditReservation = (field: keyof ReservationDraft, value: any) => {
+    setReservationState({
+      ...reservationState,
+      data: { ...reservationState.data, [field]: value }
+    });
   };
 
   const handleClearHistory = async () => {
     if (!auth.currentUser) return;
-    setIsLoading(true);
+
+    setIsClearing(true);
     try {
       await clearChatHistory(auth.currentUser.uid);
-      setShowDeleteConfirm(false);
-      setBookingState({ type: null, collectedData: {}, missingFields: [], isComplete: false });
+      logEvent(auth.currentUser.uid, 'system', 'Chat history cleared by user');
+      setShowConfirmClear(false);
     } catch (error) {
       console.error('Error clearing chat history:', error);
     } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleConfirmBooking = async () => {
-    if (!auth.currentUser || !bookingState.type) return;
-    setIsLoading(true);
-    try {
-      await saveBooking(auth.currentUser.uid, bookingState.type, bookingState.collectedData);
-      setIsBookingModalOpen(false);
-      
-      const successMsg = {
-        userId: auth.currentUser.uid,
-        role: 'assistant' as const,
-        content: `✅ **Booking Confirmed!** Your ${bookingState.type} reservation has been successfully saved. A notification has been sent to the business owner.`
-      };
-      await addChatMessage(auth.currentUser.uid, successMsg);
-      
-      // Reset booking state
-      setBookingState({ type: null, collectedData: {}, missingFields: [], isComplete: false });
-    } catch (error) {
-      console.error('Error confirming booking:', error);
-    } finally {
-      setIsLoading(false);
+      setIsClearing(false);
     }
   };
 
@@ -208,13 +335,32 @@ export const ChatPage = () => {
         </div>
         
         <div className="flex items-center gap-2">
-          {messages.length > 0 && (
+          {showConfirmClear ? (
+            <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100 animate-in fade-in zoom-in duration-200">
+              <button 
+                onClick={handleClearHistory}
+                disabled={isClearing}
+                className="px-3 py-1.5 bg-red-600 text-white rounded-md text-[10px] font-bold uppercase hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {isClearing ? "Clearing..." : "Confirm"}
+              </button>
+              <button 
+                onClick={() => setShowConfirmClear(false)}
+                disabled={isClearing}
+                className="px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded-md text-[10px] font-bold uppercase hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
             <button 
-              onClick={() => setShowDeleteConfirm(true)}
-              className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+              onClick={() => setShowConfirmClear(true)}
+              disabled={isClearing || messages.length === 0}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Clear Chat History"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-3.5 h-3.5" />
+              Clear
             </button>
           )}
           <button 
@@ -236,31 +382,7 @@ export const ChatPage = () => {
       </div>
 
       {/* Messages Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 scroll-smooth relative">
-        {showDeleteConfirm && (
-          <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-sm flex items-center justify-center p-6">
-            <div className="bg-white border border-gray-100 shadow-xl rounded-2xl p-6 max-w-sm w-full animate-in zoom-in-95 duration-200">
-              <h4 className="text-lg font-bold text-gray-900 mb-2">Clear Chat History?</h4>
-              <p className="text-sm text-gray-500 mb-6">
-                This will permanently delete all messages in this conversation. This action cannot be undone.
-              </p>
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="flex-1 px-4 py-2 text-sm font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 rounded-xl transition-colors"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={handleClearHistory}
-                  className="flex-1 px-4 py-2 text-sm font-bold text-white bg-red-500 hover:bg-red-600 rounded-xl transition-colors shadow-sm shadow-red-200"
-                >
-                  Delete All
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 scroll-smooth">
         {messages.length === 0 && !isLoading && (
           <div className="h-full flex flex-col items-center justify-center text-center p-12 space-y-4">
             <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center">
@@ -291,6 +413,17 @@ export const ChatPage = () => {
         {messages.map((msg) => (
           <ChatMessage key={msg.id} message={msg} />
         ))}
+        {reservationState.isActive && reservationState.step === 'confirm' && (
+          <div className="flex justify-start mb-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <ReservationWidget 
+              draft={reservationState.data}
+              onConfirm={handleConfirmReservation}
+              onCancel={handleCancelReservation}
+              onEdit={handleEditReservation}
+              isLoading={isLoading}
+            />
+          </div>
+        )}
         {isLoading && (
           <div className="flex justify-start mb-6 animate-pulse">
             <div className="bg-white border border-gray-100 px-5 py-3 rounded-2xl rounded-bl-none shadow-sm flex items-center gap-3">
@@ -308,14 +441,6 @@ export const ChatPage = () => {
           AI can make mistakes. Verify important info.
         </p>
       </div>
-
-      <BookingConfirmationModal 
-        isOpen={isBookingModalOpen}
-        onClose={() => setIsBookingModalOpen(false)}
-        onConfirm={handleConfirmBooking}
-        bookingData={bookingState.collectedData}
-        type={bookingState.type as 'restaurant' | 'hotel'}
-      />
     </div>
   );
 };

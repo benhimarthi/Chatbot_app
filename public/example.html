@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot SDK Integration Demo</title>
+    <style>
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            line-height: 1.6;
+            color: #1f2937;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background-color: #f3f4f6;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        h1 { color: #111827; margin-bottom: 24px; }
+        code {
+            background: #f8fafc;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #e11d48;
+            font-family: monospace;
+        }
+        pre {
+            background: #1e293b;
+            color: #f8fafc;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 20px 0;
+        }
+        .btn {
+            display: inline-block;
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            text-decoration: none;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Chat<span style="color:#4f46e5;">Flow</span> Integration Demo</h1>
+        <p>This page demonstrates how to integrate the ChatFlow widget into any website using a single script tag.</p>
+        
+        <h2>Installation</h2>
+        <p>Copy and paste the following snippet into your HTML's <code>&lt;body&gt;</code>:</p>
+        
+        <pre id="code-snippet">
+&lt;script src="https://ais-dev-u5p5kdtg2ii36nzbftwvyx-702146563588.europe-west2.run.app/chatbot.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  window.onload = function() {
+    Chatbot.init({
+      apiKey: "DEMO_API_KEY",
+      botName: "Demo Bot",
+      welcomeMessage: "Welcome! I'm the ChatFlow demo bot. How can I help?",
+      primaryColor: "#4CAF50"
+    });
+  };
+&lt;/script&gt;</pre>
+
+        <p>The chatbot should appear in the bottom-right corner of this page.</p>
+        
+        <div style="margin-top: 200px; border-top: 1px solid #e5e7eb; pt: 20px;">
+            <p>Check the console for logs. If the script is loaded correctly, you'll see "Powered by ChatFlow".</p>
+        </div>
+    </div>
+
+    <!-- Chatbot Integration -->
+    <script src="./chatbot.js"></script>
+    <script>
+      // Automatically detect the correct script source for the snippet
+      window.onload = function() {
+        var scriptSrc = window.location.origin + "/chatbot.js";
+        var snippet = document.getElementById("code-snippet");
+        var html = snippet.innerHTML.replace(/https:\/\/.*\/chatbot\.js/, scriptSrc);
+        snippet.innerHTML = html;
+
+        // Initialize Chatbot
+        Chatbot.init({
+          apiKey: "demo_user_123", // In actual app, this would be the user's ID
+          botName: "Support Assistant",
+          welcomeMessage: "Hi! How can I help you today?",
+          primaryColor: "#3b82f6"
+        });
+      };
+    </script>
+</body>
+</html>

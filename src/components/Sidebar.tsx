@@ -1,15 +1,18 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, FileText, MessageSquare, Settings, Bot, LogOut, Wallet, UserCircle, CalendarCheck } from 'lucide-react';
+import { LayoutDashboard, FileText, MessageSquare, Settings, LogOut, Wallet, UserCircle, Briefcase, Code, Users, Shield, Inbox } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { logout, auth } from '../firebase';
+import { logout, auth, getUserSettings } from '../firebase';
 import * as React from 'react';
 import { ProfileModal } from './ProfileModal';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
-  { icon: CalendarCheck, label: 'Bookings', path: '/dashboard/bookings' },
-  { icon: MessageSquare, label: 'Chat', path: '/dashboard/chat' },
   { icon: FileText, label: 'Documents', path: '/dashboard/documents' },
+  { icon: MessageSquare, label: 'Chat', path: '/dashboard/chat' },
+  { icon: Inbox, label: 'WhatsApp', path: '/dashboard/whatsapp' },
+  { icon: Briefcase, label: 'Business', path: '/dashboard/business' },
+  { icon: Users, label: 'Customers', path: '/dashboard/customers' },
+  { icon: Code, label: 'Install', path: '/dashboard/install' },
   { icon: Settings, label: 'Settings', path: '/dashboard/settings' },
 ];
 
@@ -17,6 +20,17 @@ export const Sidebar = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isProfileOpen, setIsProfileOpen] = React.useState(false);
+  const [isAdmin, setIsAdmin] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!auth.currentUser) return;
+    
+    const unsubscribe = getUserSettings(auth.currentUser.uid, (settings) => {
+      setIsAdmin(settings?.role === 'admin' || auth.currentUser?.email === 'technov009@gmail.com');
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -29,11 +43,8 @@ export const Sidebar = () => {
 
   return (
     <aside className="w-64 h-screen bg-white border-r border-gray-100 flex flex-col sticky top-0">
-      <Link to="/" className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity">
-        <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-100">
-          <Bot className="text-white w-6 h-6" />
-        </div>
-        <span className="font-bold text-xl tracking-tight text-gray-900">ChatFlow</span>
+      <Link to="/" className="p-6 flex items-center hover:opacity-80 transition-opacity">
+        <span className="font-bold text-xl tracking-tight text-gray-900">Chat<span className="text-indigo-600">Flow</span></span>
       </Link>
 
       <nav className="flex-1 px-4 py-4 space-y-1">
@@ -55,6 +66,20 @@ export const Sidebar = () => {
             </Link>
           );
         })}
+        {isAdmin && (
+          <Link
+            to="/dashboard/admin"
+            className={cn(
+              'flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors',
+              location.pathname === '/dashboard/admin'
+                ? 'bg-rose-50 text-rose-600'
+                : 'text-gray-500 hover:bg-rose-50 hover:text-rose-600'
+            )}
+          >
+            <Shield className={cn('w-5 h-5', location.pathname === '/dashboard/admin' ? 'text-rose-600' : 'text-gray-400')} />
+            Admin
+          </Link>
+        )}
       </nav>
 
       <div className="p-4 border-t border-gray-50 space-y-2">

@@ -1,0 +1,11 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Node modules
+node_modules/
+
+# Local configuration
+firebase-debug.log
+.env

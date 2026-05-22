@@ -80,24 +80,6 @@ export const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
     }
   };
 
-  const handleUpdatePlan = async (planId: string) => {
-    if (!auth.currentUser) return;
-    try {
-      await updateUserSettings(auth.currentUser.uid, {
-        subscriptionPlan: planId,
-      });
-
-      // Add notification
-      await addNotification(auth.currentUser.uid, {
-        title: 'Subscription Updated',
-        message: `Your plan has been changed to ${planId.charAt(0).toUpperCase() + planId.slice(1)}.`,
-        type: 'success'
-      });
-    } catch (error) {
-      console.error('Failed to update plan:', error);
-    }
-  };
-
   return (
     <AnimatePresence>
       {isOpen && (
@@ -183,21 +165,20 @@ export const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Subscription Plan</h3>
                   <span className="text-xs font-medium px-2 py-1 bg-indigo-100 text-indigo-600 rounded-full">
-                    Current: {userSettings?.subscriptionPlan || 'Free'}
+                    Current: {userSettings?.subscriptionPlan?.charAt(0).toUpperCase() + userSettings?.subscriptionPlan?.slice(1) || 'Free'}
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {plans.map((plan) => {
                     const isCurrent = (userSettings?.subscriptionPlan || 'free') === plan.id;
                     return (
-                      <button
+                      <div
                         key={plan.id}
-                        onClick={() => handleUpdatePlan(plan.id)}
                         className={cn(
-                          "relative p-4 rounded-2xl border text-left transition-all group",
+                          "relative p-4 rounded-2xl border text-left transition-all",
                           isCurrent 
                             ? "border-indigo-600 bg-indigo-50/30 ring-1 ring-indigo-600" 
-                            : "border-gray-100 hover:border-indigo-200 hover:bg-gray-50"
+                            : "border-gray-100 opacity-60 grayscale-[0.5]"
                         )}
                       >
                         <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center mb-3", plan.bg)}>
@@ -214,16 +195,17 @@ export const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                           ))}
                         </ul>
                         {isCurrent && (
-                          <div className="absolute top-3 right-3">
-                            <div className="bg-indigo-600 rounded-full p-1">
-                              <Check className="w-3 h-3 text-white" />
-                            </div>
+                          <div className="absolute top-3 right-3 text-[10px] font-bold text-indigo-600 bg-white px-2 py-0.5 rounded-full border border-indigo-100">
+                            Active
                           </div>
                         )}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
+                <p className="text-[10px] text-center text-gray-400 italic">
+                  To upgrade your plan, please visit the main Settings page and request an upgrade.
+                </p>
               </section>
             </div>
 

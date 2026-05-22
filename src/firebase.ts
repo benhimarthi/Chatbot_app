@@ -1,12 +1,34 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, Timestamp, updateDoc, deleteDoc, where, getDocs, writeBatch } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, Timestamp, updateDoc, deleteDoc, where, getDocs, increment, limit } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+import { PLANS } from './types';
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Determine which database ID is active from server-verified configuration (self-healing)
+let activeDatabaseId = firebaseConfig.firestoreDatabaseId;
+try {
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', '/api/firebase/config', false); // Synchronous call to fetch verified Firestore database
+  xhr.send(null);
+  if (xhr.status === 200) {
+    const data = JSON.parse(xhr.responseText);
+    if (data.databaseId) {
+      activeDatabaseId = data.databaseId;
+      console.log(`[Firebase Client] Dynamically routed to database: "${activeDatabaseId}"`);
+    }
+  }
+} catch (e) {
+  console.warn('[Firebase Client] Failed to fetch server firestore config, using default config:', e);
+}
+
+export const db = (activeDatabaseId && activeDatabaseId !== "(default)" && activeDatabaseId !== "") 
+  ? getFirestore(app, activeDatabaseId) 
+  : getFirestore(app);
+
 export const googleProvider = new GoogleAuthProvider();
 
 // Firestore Helpers
@@ -16,6 +38,13 @@ export const addDocument = async (userId: string, docData: any) => {
       ...docData,
       createdAt: serverTimestamp()
     });
+    
+    // Increment document usage
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      'usage.documents_count': increment(1)
+    });
+
     return docRef.id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `users/${userId}/documents`);
@@ -38,6 +67,12 @@ export const deleteDocument = async (userId: string, docId: string) => {
   try {
     const docRef = doc(db, 'users', userId, 'documents', docId);
     await deleteDoc(docRef);
+
+    // Decrement document usage
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      'usage.documents_count': increment(-1)
+    });
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `users/${userId}/documents/${docId}`);
   }
@@ -76,16 +111,18 @@ export const getChatMessages = (userId: string, callback: (msgs: any[]) => void)
 };
 
 export const clearChatHistory = async (userId: string) => {
+  let snapshot;
   try {
     const messagesRef = collection(db, 'users', userId, 'messages');
-    const snapshot = await getDocs(messagesRef);
-    
-    const batch = writeBatch(db);
-    snapshot.docs.forEach((doc) => {
-      batch.delete(doc.ref);
-    });
-    
-    await batch.commit();
+    snapshot = await getDocs(messagesRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, `users/${userId}/messages`);
+    return;
+  }
+
+  try {
+    const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+    await Promise.all(deletePromises);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `users/${userId}/messages`);
   }
@@ -102,13 +139,66 @@ export const updateUserSettings = async (userId: string, settings: { businessNam
 
 export const getUserSettings = (userId: string, callback: (settings: any) => void) => {
   const userRef = doc(db, 'users', userId);
-  return onSnapshot(userRef, (doc) => {
-    if (doc.exists()) {
-      callback(doc.data());
+  return onSnapshot(userRef, async (snapshot) => {
+    if (snapshot.exists()) {
+      let settings = snapshot.data();
+      
+      // Check for monthly reset
+      const now = new Date();
+      const lastReset = settings.usage?.current_period_start?.toDate() || new Date(0);
+      const daysSinceReset = (now.getTime() - lastReset.getTime()) / (1000 * 60 * 60 * 24);
+
+      if (daysSinceReset >= 30) {
+        try {
+          await updateDoc(userRef, {
+            'usage.messages_this_month': 0,
+            'usage.bookings_this_month': 0,
+            'usage.current_period_start': serverTimestamp()
+          });
+          // snapshot will re-trigger with new data
+        } catch (e) {
+          console.error("Failed to reset usage:", e);
+        }
+      }
+      
+      callback(settings);
     }
   }, (error) => {
     handleFirestoreError(error, OperationType.GET, `users/${userId}`);
   });
+};
+
+export const incrementMessageUsage = async (userId: string) => {
+  try {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      'usage.messages_this_month': increment(1)
+    });
+  } catch (error) {
+    console.error("Failed to increment message usage:", error);
+  }
+};
+
+export const incrementBookingUsage = async (userId: string) => {
+  try {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      'usage.bookings_this_month': increment(1)
+    });
+  } catch (error) {
+    console.error("Failed to increment booking usage:", error);
+  }
+};
+
+export const requestUpgrade = async (userId: string) => {
+  try {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      upgrade_requested: true
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
+  }
 };
 
 export const addNotification = async (userId: string, notification: { title: string; message: string; type: 'info' | 'success' | 'warning' | 'error' }) => {
@@ -138,45 +228,180 @@ export const getNotifications = (userId: string, callback: (notifications: any[]
   });
 };
 
+export const updateLastActive = async (userId: string) => {
+  try {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      lastActiveAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error("Failed to update last active:", error);
+  }
+};
+
+export const getCustomers = (userId: string, callback: (customers: any[]) => void) => {
+  const q = query(collection(db, 'users', userId, 'customers'), orderBy('createdAt', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    callback(docs);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.GET, `users/${userId}/customers`);
+  });
+};
+
+export const getUserLogs = (userId: string, callback: (logs: any[]) => void) => {
+  const q = query(collection(db, 'users', userId, 'logs'), orderBy('createdAt', 'desc'), limit(50));
+  return onSnapshot(q, (snapshot) => {
+    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    callback(docs);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.LIST, `users/${userId}/logs`);
+  });
+};
+
+export const logEvent = async (userId: string, type: string, message: string, metadata?: any) => {
+  try {
+    await addDoc(collection(db, 'users', userId, 'logs'), {
+      type,
+      message,
+      metadata: metadata || {},
+      createdAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error("Failed to log event:", error);
+  }
+};
+
+export const clearUserLogs = async (userId: string) => {
+  try {
+    const logsRef = collection(db, 'users', userId, 'logs');
+    const snapshot = await getDocs(logsRef);
+    const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+    await Promise.all(deletePromises);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/logs`);
+  }
+};
+
+export const getAllUsers = (callback: (users: any[]) => void) => {
+  const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    callback(docs);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.LIST, 'users');
+  });
+};
+
+export const upsertCustomer = async (userId: string, name: string, phone: string, email?: string) => {
+  try {
+    // Create a deterministic ID based on phone to avoid duplicates
+    const customerId = `cust_${phone.replace(/\D/g, '')}`;
+    const customerRef = doc(db, 'users', userId, 'customers', customerId);
+    const snap = await getDoc(customerRef);
+    
+    if (snap.exists()) {
+      const data = snap.data();
+      await updateDoc(customerRef, {
+        name,
+        email: email || data.email || '',
+        totalBookings: increment(1),
+        lastBookingAt: serverTimestamp()
+      });
+    } else {
+      await setDoc(customerRef, {
+        userId,
+        name,
+        phone,
+        email: email || '',
+        totalBookings: 1,
+        lastBookingAt: serverTimestamp(),
+        createdAt: serverTimestamp()
+      });
+    }
+  } catch (error) {
+    console.error("Failed to upsert customer:", error);
+  }
+};
+
+export const getReservationsForAdmin = (filters: { businessId?: string }, callback: (reservations: any[]) => void) => {
+  let q = query(collection(db, 'reservations'), orderBy('created_at', 'desc'));
+  
+  if (filters.businessId) {
+    q = query(collection(db, 'reservations'), where('business_id', '==', filters.businessId), orderBy('created_at', 'desc'));
+  }
+
+  return onSnapshot(q, (snapshot) => {
+    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    callback(docs);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.LIST, 'reservations');
+  });
+};
+
+export const addReservation = async (reservation: any) => {
+  try {
+    const docRef = await addDoc(collection(db, 'reservations'), {
+      ...reservation,
+      created_at: serverTimestamp()
+    });
+    
+    // Also upsert customer
+    await upsertCustomer(reservation.business_id, reservation.customer_name, reservation.customer_phone);
+    
+    return docRef.id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, 'reservations');
+  }
+};
+
+export const getReservationsInRange = async (businessId: string, date: string, startTime: string, endTime: string) => {
+  try {
+    // We fetch all reservations for that business on that date to do client-side overlap check
+    // because Firestore doesn't support complex inequality on multiple fields easily for range overlaps
+    const q = query(
+      collection(db, 'reservations'),
+      where('business_id', '==', businessId),
+      where('date', '==', date),
+      where('status', '==', 'confirmed')
+    );
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'reservations');
+    return [];
+  }
+};
+
+export const getReservations = (businessId: string, callback: (reservations: any[]) => void) => {
+  const q = query(
+    collection(db, 'reservations'),
+    where('business_id', '==', businessId),
+    orderBy('date', 'desc')
+  );
+  return onSnapshot(q, (snapshot) => {
+    const reservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    callback(reservations);
+  }, (error) => {
+    handleFirestoreError(error, OperationType.LIST, 'reservations');
+  });
+};
+
+export const deleteReservation = async (reservationId: string) => {
+  try {
+    const docRef = doc(db, 'reservations', reservationId);
+    await deleteDoc(docRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `reservations/${reservationId}`);
+  }
+};
+
 export const markNotificationAsRead = async (notificationId: string) => {
   try {
     const docRef = doc(db, 'notifications', notificationId);
     await updateDoc(docRef, { read: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `notifications/${notificationId}`);
-  }
-};
-
-// Booking Management
-export const getBookings = (userId: string, callback: (bookings: any[]) => void) => {
-  const q = query(
-    collection(db, 'bookings'),
-    where('userId', '==', userId),
-    orderBy('createdAt', 'desc')
-  );
-  return onSnapshot(q, (snapshot) => {
-    const bookings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    callback(bookings);
-  }, (error) => {
-    handleFirestoreError(error, OperationType.LIST, 'bookings');
-  });
-};
-
-export const updateBookingStatus = async (bookingId: string, status: 'confirmed' | 'cancelled' | 'pending') => {
-  try {
-    const docRef = doc(db, 'bookings', bookingId);
-    await updateDoc(docRef, { status });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `bookings/${bookingId}`);
-  }
-};
-
-export const deleteBooking = async (bookingId: string) => {
-  try {
-    const docRef = doc(db, 'bookings', bookingId);
-    await deleteDoc(docRef);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `bookings/${bookingId}`);
   }
 };
 
@@ -198,8 +423,41 @@ export const signInWithGoogle = async () => {
         createdAt: serverTimestamp(),
         businessName: '',
         customInstructions: '',
-        apiKey: ''
+        apiKey: '',
+        role: 'user',
+        subscriptionPlan: 'free',
+        bookingEnabled: false,
+        chatbotEnabled: true,
+        isChatbotBlocked: false,
+        isApiAccessBlocked: false,
+        usage: {
+          messages_this_month: 0,
+          bookings_this_month: 0,
+          documents_count: 0,
+          current_period_start: serverTimestamp()
+        }
       });
+    } else {
+      // Ensure usage fields exist for older users
+      const data = userDoc.data();
+      const updates: any = {};
+      
+      if (!data.usage) {
+        updates.usage = {
+          messages_this_month: 0,
+          bookings_this_month: 0,
+          documents_count: 0,
+          current_period_start: data.createdAt || serverTimestamp()
+        };
+      }
+      
+      if (data.chatbotEnabled === undefined) updates.chatbotEnabled = true;
+      if (data.isChatbotBlocked === undefined) updates.isChatbotBlocked = false;
+      if (data.isApiAccessBlocked === undefined) updates.isApiAccessBlocked = false;
+
+      if (Object.keys(updates).length > 0) {
+        await updateDoc(userRef, updates);
+      }
     }
     
     return user;

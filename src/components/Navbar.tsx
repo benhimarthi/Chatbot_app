@@ -29,7 +29,7 @@ export const Navbar = () => {
   const unreadCount = notifications.filter(n => !n.read).length;
 
   return (
-    <header className="h-16 bg-white border-b border-gray-100 px-8 flex items-center justify-between sticky top-0 z-10">
+    <header className="h-16 bg-white border-bottom border-gray-100 px-8 flex items-center justify-between sticky top-0 z-10">
       <div className="flex items-center gap-4 bg-gray-50 px-4 py-2 rounded-xl w-96">
         <Search className="w-4 h-4 text-gray-400" />
         <input

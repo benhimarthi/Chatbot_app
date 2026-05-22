@@ -1,5 +1,8 @@
 {
-  "name": "AI Chatbot Builder",
-  "description": "A modern SaaS platform to build, train, and deploy AI chatbots for your business in minutes.",
-  "requestFramePermissions": []
+  "name": "ChatFlow",
+  "description": "A comprehensive AI chatbot platform with document ingestion, customer support automation, and an integrated restaurant reservation system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
