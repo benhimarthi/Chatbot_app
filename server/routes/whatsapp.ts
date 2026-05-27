@@ -226,6 +226,28 @@ router.get("/api/whatsapp/pending-updates", requireAuth, async (req: Authenticat
   }
 });
 
+// API: Register/Update a Custom Webhook URL for the active instance
+router.post("/api/whatsapp/update-webhook", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const workspaceId = req.workspaceId!;
+    const { webhookUrl } = req.body;
+    if (!webhookUrl) {
+      return res.status(400).json({ error: "webhookUrl is required" });
+    }
+
+    const instanceName = `instance_${workspaceId}`;
+    await setWebhook(instanceName, webhookUrl);
+
+    res.json({
+      success: true,
+      message: `Successfully set custom webhook URL on Evolution API: ${webhookUrl}`
+    });
+  } catch (error: any) {
+    console.error("Failed to update webhook URL:", error);
+    res.status(500).json({ error: error.message || "Failed to update webhook URL" });
+  }
+});
+
 // API: Simulate a webhook call for developer troubleshooting and pipeline validation
 router.post("/api/whatsapp/simulate-webhook", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {

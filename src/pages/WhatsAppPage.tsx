@@ -362,6 +362,33 @@ export const WhatsAppPage = () => {
   const [isSimulating, setIsSimulating] = React.useState<boolean>(false);
   const [simulationSuccess, setSimulationSuccess] = React.useState<boolean>(false);
   const [isCopied, setIsCopied] = React.useState<boolean>(false);
+  const [isFirebaseCopied, setIsFirebaseCopied] = React.useState<boolean>(false);
+
+  // Custom Webhook Management State
+  const [customWebhookUrl, setCustomWebhookUrl] = React.useState<string>('');
+  const [isUpdatingWebhook, setIsUpdatingWebhook] = React.useState<boolean>(false);
+  const [webhookUpdateSuccess, setWebhookUpdateSuccess] = React.useState<boolean>(false);
+
+  const updateWebhookOnServer = async (urlToSet: string) => {
+    if (!currentUser || !urlToSet.trim()) return;
+    try {
+      setIsUpdatingWebhook(true);
+      setWebhookUpdateSuccess(false);
+      const token = await currentUser.getIdToken();
+      await axios.post('/api/whatsapp/update-webhook', {
+        webhookUrl: urlToSet.trim()
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setWebhookUpdateSuccess(true);
+      setTimeout(() => setWebhookUpdateSuccess(false), 3000);
+    } catch (err: any) {
+      console.error("Failed to update custom webhook url:", err);
+      setErrorMessage(err?.response?.data?.error || "Failed to update custom webhook on Evolution API.");
+    } finally {
+      setIsUpdatingWebhook(false);
+    }
+  };
 
   const copyWebhookUrl = () => {
     const absoluteUrl = window.location.origin + '/api/whatsapp/webhook';
@@ -685,37 +712,124 @@ export const WhatsAppPage = () => {
             </div>
           </div>
 
-          <div className="text-slate-350 text-xs leading-relaxed space-y-2 font-mono">
-            <p className="text-slate-300 font-bold text-xs flex items-center gap-1.5 text-indigo-400">
-              ⚡ Webhook Integration Absolute Target
-            </p>
-            <p className="text-[11px] text-slate-450">
-              Our full-stack Cloud Run container hosts both the React interface and the live Node.js/Express backend daemon under a single port. To listen for link-scans and chats, configure the following absolute URL exactly inside your Evolution API panel:
-            </p>
-            <div className="flex items-stretch gap-2">
-              <div className="flex-1 bg-slate-950 hover:bg-black transition-colors px-3 py-2 flex items-center rounded-xl border border-slate-800 text-indigo-300 text-xs font-mono break-all select-all">
-                {window.location.origin}/api/whatsapp/webhook
+          {/* Webhook Targets Selection Panel */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 font-mono">
+            {/* Target 1: Standard Application Container */}
+            <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/60 flex flex-col justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Standard Receiver</span>
+                <p className="text-xs font-bold text-indigo-400 mt-1">Application Backend Webhook</p>
+                <p className="text-[10px] text-slate-400 leading-normal mt-1.5">
+                  Processes and queues whatsapp handshakes internally within the active application container using server memory cache buffers.
+                </p>
               </div>
-              <button
-                onClick={copyWebhookUrl}
-                className={`px-4 rounded-xl font-bold font-mono text-xs flex items-center gap-1.5 transition-all outline-none ${
-                  isCopied 
-                    ? 'bg-emerald-600 text-white' 
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700'
-                }`}
-              >
-                {isCopied ? (
-                  <>
-                    <Check className="w-4 h-4" />
-                    Copied!
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5" />
-                    Copy
-                  </>
-                )}
-              </button>
+              <div className="flex items-center gap-1.5 mt-2">
+                <div className="flex-1 bg-slate-900 border border-slate-800 px-2.5 py-1.5 rounded-lg text-[11px] text-slate-300 break-all truncate select-all">
+                  {window.location.origin}/api/whatsapp/webhook
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/api/whatsapp/webhook`);
+                    setIsCopied(true);
+                    setTimeout(() => setIsCopied(false), 2000);
+                  }}
+                  className={`p-2 rounded-lg border text-[11px] flex items-center justify-center transition-all shrink-0 ${
+                    isCopied
+                      ? 'bg-emerald-600 border-emerald-500 text-white'
+                      : 'bg-slate-800 border-slate-700 hover:bg-slate-705 text-slate-300 hover:text-white'
+                  }`}
+                  title="Copy standard webhook URL"
+                >
+                  {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Target 2: Deployed Firebase Cloud Function */}
+            <div className="p-4 rounded-xl border border-slate-800 bg-indigo-950/20 flex flex-col justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-weight-bold font-bold text-indigo-400 uppercase tracking-widest block font-sans">Firebase Native</span>
+                  <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-bold px-1.5 py-0.5 rounded-full border border-emerald-500/30 uppercase">Deployed</span>
+                </div>
+                <p className="text-xs font-bold text-slate-200 mt-1">Firebase Cloud Function Webhook</p>
+                <p className="text-[10px] text-slate-400 leading-normal mt-1.5">
+                  Highly persistent, direct serverless function responding with Cloud-integrated Firestore updates and instant background chatbot replies.
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 mt-2">
+                <div className="flex-1 bg-slate-900 border border-slate-800 px-2.5 py-1.5 rounded-lg text-[11px] text-indigo-200 break-all truncate select-all">
+                  https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/evolutionWebhook
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/evolutionWebhook`);
+                    setIsFirebaseCopied(true);
+                    setTimeout(() => setIsFirebaseCopied(false), 2000);
+                  }}
+                  className={`p-2 rounded-lg border text-[11px] flex items-center justify-center transition-all shrink-0 ${
+                    isFirebaseCopied
+                      ? 'bg-emerald-600 border-emerald-500 text-white'
+                      : 'bg-slate-800 border-slate-700 hover:bg-slate-705 text-slate-300 hover:text-white'
+                  }`}
+                  title="Copy Firebase webhook URL"
+                >
+                  {isFirebaseCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Interactive Webhook Registration Form */}
+          <div className="bg-slate-950/50 rounded-xl border border-slate-800 p-4 font-mono">
+            <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block mb-2">Configure Webhook Receiver on Evolution API</span>
+            <p className="text-[10px] text-slate-400 leading-normal mb-3">
+              Enter whichever webhook URL you want to register! Choose the Standard URL to log activities inside this browser window instantly, or the Firebase Cloud Function URL to turn on fully autonomous, 24/7 background chatbot automation.
+            </p>
+            <div className="flex flex-col sm:flex-row items-stretch gap-2">
+              <input
+                type="url"
+                value={customWebhookUrl}
+                onChange={(e) => setCustomWebhookUrl(e.target.value)}
+                placeholder="Paste Webhook URL here..."
+                className="flex-1 min-w-0 bg-slate-900 hover:bg-slate-900 border border-slate-800 px-3.5 py-2.5 rounded-lg text-xs font-mono text-slate-250 placeholder-slate-650 outline-none focus:border-indigo-500 transition-all text-white"
+              />
+              <div className="flex items-stretch gap-1.5 sm:shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setCustomWebhookUrl(`https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/evolutionWebhook`)}
+                  className="px-2.5 rounded-lg border border-slate-800 text-slate-400 text-[10px] bg-slate-900 hover:bg-slate-850 hover:text-white transition-all font-bold"
+                  title="Autofill standard Firebase URL"
+                >
+                  Fill Firebase
+                </button>
+                <button
+                  type="button"
+                  disabled={isUpdatingWebhook}
+                  onClick={() => updateWebhookOnServer(customWebhookUrl)}
+                  className={`px-4 rounded-lg text-xs font-bold font-sans flex items-center justify-center gap-2 transition-all shrink-0 active:scale-95 disabled:opacity-50 ${
+                    webhookUpdateSuccess
+                      ? 'bg-emerald-600 text-white shadow-lg'
+                      : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg'
+                  }`}
+                >
+                  {isUpdatingWebhook ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Registering...
+                    </>
+                  ) : webhookUpdateSuccess ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-white animate-bounce" />
+                      Successfully Set!
+                    </>
+                  ) : (
+                    <>
+                      Apply & Save Target
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
 
