@@ -10,19 +10,21 @@ export const auth = getAuth(app);
 
 // Determine which database ID is active from server-verified configuration (self-healing)
 let activeDatabaseId = firebaseConfig.firestoreDatabaseId;
-try {
-  const xhr = new XMLHttpRequest();
-  xhr.open('GET', '/api/firebase/config', false); // Synchronous call to fetch verified Firestore database
-  xhr.send(null);
-  if (xhr.status === 200) {
-    const data = JSON.parse(xhr.responseText);
-    if (data.databaseId) {
-      activeDatabaseId = data.databaseId;
-      console.log(`[Firebase Client] Dynamically routed to database: "${activeDatabaseId}"`);
+if (typeof window !== 'undefined' && typeof XMLHttpRequest !== 'undefined') {
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/firebase/config', false); // Synchronous call to fetch verified Firestore database
+    xhr.send(null);
+    if (xhr.status === 200) {
+      const data = JSON.parse(xhr.responseText);
+      if (data.databaseId) {
+        activeDatabaseId = data.databaseId;
+        console.log(`[Firebase Client] Dynamically routed to database: "${activeDatabaseId}"`);
+      }
     }
+  } catch (e) {
+    console.warn('[Firebase Client] Failed to fetch server firestore config, using default config:', e);
   }
-} catch (e) {
-  console.warn('[Firebase Client] Failed to fetch server firestore config, using default config:', e);
 }
 
 export const db = (activeDatabaseId && activeDatabaseId !== "(default)" && activeDatabaseId !== "") 
