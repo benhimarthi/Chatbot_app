@@ -138,7 +138,14 @@ service cloud.firestore {
     }
 
     function isValidWhatsAppInstance(data) {
-      return hasOnlyAllowedFields(['instanceName', 'connected', 'phone', 'createdAt', 'updatedAt']) &&
+      return hasOnlyAllowedFields([
+        'instanceName', 'connected', 'phone', 'createdAt', 'updatedAt',
+        'id', 'name', 'phone_number', 'status', 'account_protection',
+        'log_messages', 'read_incoming_messages', 'webhook_url',
+        'webhook_enabled', 'webhook_events', 'api_key', 'webhook_secret',
+        'webhookSecret', 'created_at', 'updated_at', 'whatsappSessionId',
+        'apiKey', 'customWebhookUrl', 'instanceCreated', 'mfaEnabled', 'mfaPhone'
+      ]) &&
              data.instanceName is string &&
              data.connected is bool;
     }

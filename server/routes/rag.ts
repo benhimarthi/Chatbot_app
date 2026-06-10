@@ -1,5 +1,11 @@
 import { Router } from "express";
 import { Pinecone } from '@pinecone-database/pinecone';
+import { 
+  upsertDocumentToPinecone, 
+  deleteDocumentFromPinecone, 
+  prioritizeUrlLinks,
+  generateRagResponse
+} from "../../src/services/ragServiceServer";
 
 const router = Router();
 
@@ -64,6 +70,92 @@ router.post("/api/rag/delete", async (req, res) => {
   } catch (error) {
     console.error("Pinecone Delete Error:", error);
     res.status(500).json({ error: "Failed to delete from Pinecone" });
+  }
+});
+
+// Secure API: Document Upsert to Pinecone
+router.post("/api/rag/upsert-document", async (req, res) => {
+  try {
+    const { userId, content, name, docId, contentItems } = req.body;
+    if (!userId || !content || !name) {
+      return res.status(400).json({ error: "userId, content, and name are required" });
+    }
+    await upsertDocumentToPinecone(userId, content, name, docId, contentItems);
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Secure Document Upsert Error:", error);
+    res.status(500).json({ error: error.message || "Failed to upsert document to Pinecone" });
+  }
+});
+
+// Secure API: Document Delete from Pinecone
+router.post("/api/rag/delete-document", async (req, res) => {
+  try {
+    const { userId, docId } = req.body;
+    if (!userId || !docId) {
+      return res.status(400).json({ error: "userId and docId are required" });
+    }
+    await deleteDocumentFromPinecone(userId, docId);
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Secure Document Delete Error:", error);
+    res.status(500).json({ error: error.message || "Failed to delete document from Pinecone" });
+  }
+});
+
+// Secure API: Prioritize Links using AI
+router.post("/api/rag/prioritize-links", async (req, res) => {
+  try {
+    const { homepageTitle, candidates } = req.body;
+    if (!homepageTitle || !candidates) {
+      return res.status(400).json({ error: "homepageTitle and candidates are required" });
+    }
+    const topUrls = await prioritizeUrlLinks(homepageTitle, candidates);
+    res.json({ topUrls });
+  } catch (error: any) {
+    console.error("Secure Prioritize Links Error:", error);
+    res.status(500).json({ error: error.message || "Failed to prioritize links" });
+  }
+});
+
+// Secure API: Run Complete RAG Pipeline on-demand from External Cloud Functions (e.g. Firebase, custom microservices)
+router.post("/api/rag/generate-response", async (req, res) => {
+  try {
+    const { workspaceId, userId, messageText, question, apiKey } = req.body;
+    
+    // Support multiple field names to maximize developer ease-of-use
+    const targetWorkspaceId = workspaceId || userId;
+    const targetQuestion = messageText || question;
+
+    if (!targetWorkspaceId || !targetQuestion) {
+      return res.status(400).json({ 
+        error: "Missing required params: workspaceId (or userId) and messageText (or question) are required." 
+      });
+    }
+
+    // Optional Security verification if RAG_API_KEY is placed in your environment variables (.env)
+    const localRagKey = process.env.RAG_API_KEY;
+    const requestApiKey = apiKey || req.headers["x-api-key"] || (req.headers["authorization"] ? req.headers["authorization"].toString().replace("Bearer ", "") : null);
+    
+    if (localRagKey && requestApiKey !== localRagKey) {
+      return res.status(401).json({ error: "Unauthorized: Invalid or missing RAG_API_KEY authentication." });
+    }
+
+    console.log(`[RAG Public Endpoint] Received external request for workspaceId: "${targetWorkspaceId}". Question: "${targetQuestion}"`);
+
+    // Execute the complete background server RAG pipeline
+    const result = await generateRagResponse(targetWorkspaceId, targetQuestion);
+
+    res.json({
+      success: true,
+      text: result.text,
+      images: result.images || []
+    });
+  } catch (error: any) {
+    console.error("[RAG Public Endpoint] Error executing RAG pipeline:", error);
+    res.status(500).json({ 
+      error: error.message || "Failed to execute complete RAG pipeline." 
+    });
   }
 });
 

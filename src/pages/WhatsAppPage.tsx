@@ -3,9 +3,10 @@ import {
   Loader2, Send, CheckCircle2, AlertCircle, RefreshCw, Smartphone, 
   QrCode, MessageSquare, Wifi, WifiOff, Check, CheckCheck, User, Reply,
   HelpCircle, Sparkles, Terminal, ChevronDown, ChevronRight, Play, Copy,
-  Settings
+  Settings, ShieldAlert, ArrowRight
 } from 'lucide-react';
 import { auth, db } from '../firebase';
+import { linkWithPhoneNumber, RecaptchaVerifier, unlink } from 'firebase/auth';
 import { 
   collection, query, where, orderBy, onSnapshot, doc, updateDoc, setDoc
 } from 'firebase/firestore';
@@ -61,6 +62,153 @@ export const WhatsAppPage = () => {
   // Real-time Success State Management
   const [showSuccessModal, setShowSuccessModal] = React.useState<boolean>(false);
   const isFirstCheckRef = React.useRef<boolean>(true);
+
+  // Phone MFA Configuration State and Methods
+  const [mfaEnabled, setMfaEnabled] = React.useState<boolean>(false);
+  const [mfaPhone, setMfaPhone] = React.useState<string>('');
+  const [sessionPhoneInput, setSessionPhoneInput] = React.useState<string>('');
+
+  React.useEffect(() => {
+    if (mfaPhone && !sessionPhoneInput) {
+      setSessionPhoneInput(mfaPhone);
+    }
+  }, [mfaPhone]);
+
+  const [mfaPhoneInput, setMfaPhoneInput] = React.useState<string>('');
+  const [mfaCodeInput, setMfaCodeInput] = React.useState<string>('');
+  const [mfaStep, setMfaStep] = React.useState<'idle' | 'verifying'>('idle');
+  const [isSendingMfaCode, setIsSendingMfaCode] = React.useState<boolean>(false);
+  const [isVerifyingMfaCode, setIsVerifyingMfaCode] = React.useState<boolean>(false);
+  const [isDisablingMfa, setIsDisablingMfa] = React.useState<boolean>(false);
+  const [mfaSuccessMessage, setMfaSuccessMessage] = React.useState<string>('');
+  const [mfaErrorMessage, setMfaErrorMessage] = React.useState<string>('');
+
+  const confirmationResultRef = React.useRef<any>(null);
+  const recaptchaVerifierRef = React.useRef<any>(null);
+
+  const sendMfaCode = async () => {
+    if (!currentUser || !mfaPhoneInput.trim()) return;
+    try {
+      setIsSendingMfaCode(true);
+      setMfaErrorMessage('');
+      setMfaSuccessMessage('');
+
+      let formattedPhone = mfaPhoneInput.trim();
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = '+' + formattedPhone;
+      }
+
+      // Cleanup any stale recaptcha instance
+      if (recaptchaVerifierRef.current) {
+        try {
+          recaptchaVerifierRef.current.clear();
+        } catch (e) {
+          console.warn("Recaptcha cleanup nested error:", e);
+        }
+      }
+
+      const container = document.getElementById('recaptcha-container');
+      if (!container) {
+        throw new Error("Unable to locate #recaptcha-container DOM anchor in active page view.");
+      }
+
+      // Instantiate client-side RecaptchaVerifier
+      const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+        size: 'invisible',
+        callback: () => {
+          // Solved
+        }
+      });
+      recaptchaVerifierRef.current = verifier;
+
+      // Link phone number to current logged in user via Firebase Auth API
+      const confirmationResult = await linkWithPhoneNumber(currentUser, formattedPhone, verifier);
+      confirmationResultRef.current = confirmationResult;
+
+      setMfaStep('verifying');
+      setMfaSuccessMessage(`A native Firebase Auth secure verification OTP has been dispatched to ${formattedPhone}`);
+    } catch (err: any) {
+      console.error("Firebase Auth trigger phone error:", err);
+      if (err.code === 'auth/provider-already-linked') {
+        setMfaErrorMessage("Your Firebase Auth profile already has a verified phone number attached. If you wish to use a different one, please unlink first.");
+      } else if (err.code === 'auth/invalid-phone-number') {
+        setMfaErrorMessage("Invalid format. Please make sure to include the country code (e.g. +14155552671).");
+      } else {
+        setMfaErrorMessage(err.message || "Failed to dispatch SMS verification key via Firebase provider.");
+      }
+    } finally {
+      setIsSendingMfaCode(false);
+    }
+  };
+
+  const verifyMfaCode = async () => {
+    if (!currentUser || !mfaCodeInput.trim() || !confirmationResultRef.current) return;
+    try {
+      setIsVerifyingMfaCode(true);
+      setMfaErrorMessage('');
+      setMfaSuccessMessage('');
+
+      // Confirm the OTP code in Firebase, linking the phone credential permanently to their active user profile
+      await confirmationResultRef.current.confirm(mfaCodeInput.trim());
+
+      // Force refresh user Auth token to include the newly linked phone number claim
+      const idToken = await currentUser.getIdToken(true);
+
+      // Tell backend to update DB document status
+      const res = await axios.post('/api/whatsapp/mfa/verify-auth', {}, {
+        headers: { Authorization: `Bearer ${idToken}` }
+      });
+
+      if (res.data?.success) {
+        setMfaEnabled(true);
+        setMfaPhone(res.data.mfaPhone);
+        setMfaStep('idle');
+        setMfaPhoneInput('');
+        setMfaCodeInput('');
+        setMfaSuccessMessage('Multi-Factor Authentication successfully enrolled and verified using standard Firebase Auth!');
+        
+        checkStatus(currentUser);
+      }
+    } catch (err: any) {
+      console.error("Firebase verified OTP error:", err);
+      setMfaErrorMessage(err.response?.data?.error || err.message || "Failed to verify current OTP code. Please enter the correct key.");
+    } finally {
+      setIsVerifyingMfaCode(false);
+    }
+  };
+
+  const disableMfa = async () => {
+    if (!currentUser) return;
+    if (!window.confirm("Are you sure you want to disable Phone MFA? This will unlink the phone credential from your login profile and deactivate WhatsApp QR linking.")) return;
+    try {
+      setIsDisablingMfa(true);
+      setMfaErrorMessage('');
+      setMfaSuccessMessage('');
+
+      // Unlink phone provider from direct Auth profile
+      try {
+        await unlink(currentUser, 'phone');
+      } catch (unlinkErr) {
+        console.warn("Unlinking phone failed (it might not be linked):", unlinkErr);
+      }
+
+      const idToken = await currentUser.getIdToken(true);
+      const res = await axios.post('/api/whatsapp/mfa/disable', {}, {
+        headers: { Authorization: `Bearer ${idToken}` }
+      });
+
+      if (res.data?.success) {
+        setMfaEnabled(false);
+        setMfaPhone('');
+        setMfaSuccessMessage('Phone Multi-Factor Authentication successfully disabled and unlinked.');
+        checkStatus(currentUser);
+      }
+    } catch (err: any) {
+      setMfaErrorMessage(err.response?.data?.error || err.message || "Failed to disable MFA.");
+    } finally {
+      setIsDisablingMfa(false);
+    }
+  };
 
   // Webhook Event Developer logs
   const [webhookLogs, setWebhookLogs] = React.useState<any[]>([]);
@@ -141,6 +289,13 @@ export const WhatsAppPage = () => {
         const data = docSnap.data();
         const isNowConnected = !!data.connected;
         
+        if (data.mfaEnabled !== undefined) {
+          setMfaEnabled(!!data.mfaEnabled);
+        }
+        if (data.mfaPhone !== undefined) {
+          setMfaPhone(data.mfaPhone || '');
+        }
+
         setConnectionState(prev => {
           const wasConnected = prev.connected;
           
@@ -227,14 +382,20 @@ export const WhatsAppPage = () => {
   React.useEffect(() => {
     if (!currentUser) return;
 
+    // Use direct query filtering to completely bypass composite index requirements
     const q = query(
       collection(db, 'conversations'),
-      where('workspaceId', '==', currentUser.uid),
-      orderBy('lastMessageAt', 'desc')
+      where('workspaceId', '==', currentUser.uid)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as Conversation }));
+      // Sort client-side
+      list.sort((a, b) => {
+        const dateA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const dateB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return dateB - dateA; // Descending
+      });
       setConversations(list);
     }, (err) => {
       console.error("Conversations realtime hook error:", err);
@@ -250,15 +411,21 @@ export const WhatsAppPage = () => {
       return;
     }
 
+    // Use direct query filtering to completely bypass composite index requirements
     const q = query(
       collection(db, 'messages'),
       where('conversationId', '==', selectedConv.id),
-      where('workspaceId', '==', currentUser.uid),
-      orderBy('timestamp', 'asc')
+      where('workspaceId', '==', currentUser.uid)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as Message }));
+      // Sort client-side
+      list.sort((a, b) => {
+        const dateA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const dateB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return dateA - dateB; // Ascending
+      });
       setMessages(list);
       
       // Auto-scroll to lowest message
@@ -320,8 +487,12 @@ export const WhatsAppPage = () => {
           setCustomWebhookUrl(response.data.customWebhookUrl);
         }
 
-        if (response.data?.customSessionId !== undefined) {
-          setCustomSessionId(response.data.customSessionId);
+        if (response.data?.mfaEnabled !== undefined) {
+          setMfaEnabled(!!response.data.mfaEnabled);
+        }
+
+        if (response.data?.mfaPhone !== undefined) {
+          setMfaPhone(response.data.mfaPhone || '');
         }
 
         if (isNowConnected) {
@@ -341,6 +512,14 @@ export const WhatsAppPage = () => {
 
   const generateQR = async () => {
     if (!currentUser) return;
+
+    const targetPhone = sessionPhoneInput.trim() || mfaPhone.trim();
+    if (!targetPhone) {
+      setErrorMessage("Please specify a valid phone number (including country code) in the dedicated connection field to link WhatsApp.");
+      setErrorLogDetails("A phone number is required in order to register and provision your WhatsApp connection instance on the server.");
+      return;
+    }
+
     try {
       setIsGeneratingQR(true);
       setErrorMessage('');
@@ -351,7 +530,9 @@ export const WhatsAppPage = () => {
       isFirstCheckRef.current = false;
 
       const token = await currentUser.getIdToken();
-      const response = await axios.post('/api/whatsapp/connect', {}, {
+      const response = await axios.post('/api/whatsapp/connect', { 
+        phone: targetPhone 
+      }, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -388,33 +569,6 @@ export const WhatsAppPage = () => {
   const [simulationSuccess, setSimulationSuccess] = React.useState<boolean>(false);
   const [isCopied, setIsCopied] = React.useState<boolean>(false);
   const [isFirebaseCopied, setIsFirebaseCopied] = React.useState<boolean>(false);
-
-  // WaSender Custom Session ID Management State
-  const [customSessionId, setCustomSessionId] = React.useState<string>('');
-  const [isUpdatingSessionId, setIsUpdatingSessionId] = React.useState<boolean>(false);
-  const [sessionUpdateSuccess, setSessionUpdateSuccess] = React.useState<boolean>(false);
-
-  const updateSessionIdOnServer = async (idToSet: string) => {
-    if (!currentUser) return;
-    try {
-      setIsUpdatingSessionId(true);
-      setSessionUpdateSuccess(false);
-      const token = await currentUser.getIdToken();
-      await axios.post('/api/whatsapp/update-session-id', {
-        customSessionId: idToSet.trim()
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setSessionUpdateSuccess(true);
-      setTimeout(() => setSessionUpdateSuccess(false), 3000);
-      await checkStatus(currentUser);
-    } catch (err: any) {
-      console.error("Failed to update custom Session ID:", err);
-      setErrorMessage(err?.response?.data?.error || "Failed to update custom Session ID on server.");
-    } finally {
-      setIsUpdatingSessionId(false);
-    }
-  };
 
   // Custom Webhook Management State
   const [customWebhookUrl, setCustomWebhookUrl] = React.useState<string>('https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/wasenderWebhook');
@@ -576,6 +730,7 @@ export const WhatsAppPage = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-100 p-6 flex flex-col gap-6">
+
               <div>
                 <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
                   <Smartphone className="w-5 h-5 text-indigo-600" /> WhatsApp Linker instructions
@@ -648,24 +803,48 @@ export const WhatsAppPage = () => {
               )}
             </div>
 
-            <div className="flex gap-3">
-              <button
-                onClick={generateQR}
-                disabled={isGeneratingQR || connectionState.connected}
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white font-medium text-sm hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 transition-colors flex items-center gap-2"
-              >
-                {isGeneratingQR && <Loader2 className="w-4 h-4 animate-spin" />}
-                {connectionState.connected ? 'WhatsApp Linked' : 'Generate Connection QR Code'}
-              </button>
+            <div className="flex flex-col gap-3">
+              {/* Dedicated Phone Number Field for connecting session */}
+              <div className="flex flex-col gap-1.5 max-w-sm">
+                <label htmlFor="whatsapp-session-phone-input" className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-indigo-500 animate-pulse" /> Connecting Phone Number:
+                </label>
+                <input
+                  type="tel"
+                  id="whatsapp-session-phone-input"
+                  placeholder="Enter number with country code (e.g. +14155552671)"
+                  value={sessionPhoneInput}
+                  onChange={(e) => setSessionPhoneInput(e.target.value)}
+                  disabled={isGeneratingQR || connectionState.connected}
+                  className="w-full px-3 py-2 border border-blue-200 focus:border-indigo-500 bg-white rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all placeholder:text-gray-400 font-mono text-gray-900"
+                />
+                <p className="text-[10px] text-gray-500 leading-normal">
+                  Specify the phone number corresponding to the WhatsApp account you are connecting.
+                </p>
+              </div>
 
-              <button
-                onClick={() => checkStatus()}
-                disabled={isCheckingState}
-                className="p-2.5 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
-                title="Sync and Refresh connection"
-              >
-                <RefreshCw className={`w-4 h-4 ${isCheckingState ? 'animate-spin text-indigo-600' : ''}`} />
-              </button>
+              <div className="flex gap-3 mt-1">
+                <button
+                  type="button"
+                  id="whatsapp-generate-qr-btn"
+                  onClick={generateQR}
+                  disabled={isGeneratingQR || connectionState.connected}
+                  className="px-6 py-2.5 rounded-xl bg-indigo-600 font-medium text-sm text-white hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 transition-colors flex items-center gap-2"
+                >
+                  {isGeneratingQR && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {connectionState.connected ? 'WhatsApp Linked' : 'Generate Connection QR Code'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => checkStatus()}
+                  disabled={isCheckingState}
+                  className="p-2.5 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+                  title="Sync and Refresh connection"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isCheckingState ? 'animate-spin text-indigo-600' : ''}`} />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -697,7 +876,17 @@ export const WhatsAppPage = () => {
                   {qrCode.startsWith('data:') ? (
                     <img src={qrCode} alt="WhatsApp QR Code" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
                   ) : (
-                    <div className="p-4 text-[8px] font-mono break-all text-gray-500">{qrCode}</div>
+                    <div className="flex flex-col items-center gap-2 p-2">
+                      <img 
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrCode)}`} 
+                        alt="WhatsApp QR Code" 
+                        className="w-48 h-48 object-contain" 
+                        referrerPolicy="no-referrer" 
+                      />
+                      <div className="text-[10px] text-gray-500 text-center font-medium mt-1">
+                        Scan to link WhatsApp
+                      </div>
+                    </div>
                   )}
                 </div>
               ) : (
@@ -729,368 +918,9 @@ export const WhatsAppPage = () => {
               System uses real-time event socket sync. Scan takes effect immediately.
             </p>
           </div>
-
-          {/* WaSender CUSTOM SESSION ID CONFIGURATION */}
-          <div className="bg-white rounded-2xl border border-gray-100 p-6 flex flex-col gap-4 text-left">
-            <div>
-              <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
-                <Settings className="w-4 h-4 text-indigo-600" /> WaSender Session ID
-              </h3>
-              <p className="text-xs text-gray-500 mt-1 leading-normal">
-                Customize the session ID used for WhatsApp handshakes. Leaving this blank defaults back to your secure default workspace session.
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Default Session"
-                  value={customSessionId}
-                  onChange={(e) => setCustomSessionId(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-gray-800 font-mono"
-                  id="wasender-custom-session-field"
-                />
-                <button
-                  type="button"
-                  onClick={() => updateSessionIdOnServer(customSessionId)}
-                  disabled={isUpdatingSessionId}
-                  className={`px-4 py-2 text-xs font-semibold rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 active:scale-95 disabled:opacity-50 shrink-0 ${
-                    sessionUpdateSuccess
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg'
-                  }`}
-                  id="wasender-custom-session-save"
-                >
-                  {isUpdatingSessionId ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : sessionUpdateSuccess ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-white animate-bounce" /> Saved
-                    </>
-                  ) : (
-                    'Save'
-                  )}
-                </button>
-              </div>
-
-              <div className="flex justify-between items-center px-1">
-                <span className="text-[10px] text-gray-500 font-medium font-mono">
-                  Active ID: <strong className="font-mono text-gray-700">{connectionState.instanceName.replace(/^instance_/, '')}</strong>
-                </span>
-                {connectionState.instanceName.replace(/^instance_/, '') !== currentUser?.uid && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCustomSessionId('');
-                      updateSessionIdOnServer('');
-                    }}
-                    className="text-[10px] text-indigo-600 hover:text-indigo-800 hover:underline font-semibold"
-                    id="wasender-custom-session-reset"
-                  >
-                    Reset with Default
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
         </div>
       </div>
-
-        {/* 📡 Under-The-Hood: Live Webhook & Connection Event Stream */}
-        <div className="bg-slate-900 rounded-2xl border border-slate-800 p-6 flex flex-col gap-5 text-white shadow-xl mt-6 animate-scale-up" id="developer-webhook-console">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-slate-800 text-indigo-400 flex items-center justify-center border border-slate-700">
-                <Terminal className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="text-xs font-mono font-bold tracking-wider text-slate-300 uppercase block">Under-The-Hood: Live Event Stream</span>
-                <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">Tracing webhook: listener & metadata extractor</span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={triggerSimulatedWebhook}
-                disabled={isSimulating}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-mono font-bold flex items-center gap-2 transition-all ${
-                  simulationSuccess
-                    ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/50'
-                    : 'bg-indigo-600 hover:bg-indigo-700 text-white active:scale-95 disabled:opacity-50 shadow-lg shadow-indigo-950/50'
-                }`}
-                title="Inject a virtual webhook sequence to verify custom logic instantly"
-              >
-                {isSimulating ? (
-                  <>
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Dispatching...
-                  </>
-                ) : simulationSuccess ? (
-                  <>
-                    <Check className="w-3 h-3 animate-bounce" />
-                    Webhook Dispatched!
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3 h-3" />
-                    Test Webhook Extraction Pipeline
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Webhook Targets Selection Panel */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 font-mono">
-            {/* Target 1: Standard Application Container */}
-            <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/60 flex flex-col justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Standard Receiver</span>
-                <p className="text-xs font-bold text-indigo-400 mt-1">Application Backend Webhook</p>
-                <p className="text-[10px] text-slate-400 leading-normal mt-1.5">
-                  Processes and queues whatsapp handshakes internally within the active application container using server memory cache buffers.
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 mt-2">
-                <div className="flex-1 bg-slate-900 border border-slate-800 px-2.5 py-1.5 rounded-lg text-[11px] text-slate-300 break-all truncate select-all">
-                  {window.location.origin}/api/whatsapp/webhook
-                </div>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(`${window.location.origin}/api/whatsapp/webhook`);
-                    setIsCopied(true);
-                    setTimeout(() => setIsCopied(false), 2000);
-                  }}
-                  className={`p-2 rounded-lg border text-[11px] flex items-center justify-center transition-all shrink-0 ${
-                    isCopied
-                      ? 'bg-emerald-600 border-emerald-500 text-white'
-                      : 'bg-slate-800 border-slate-700 hover:bg-slate-705 text-slate-300 hover:text-white'
-                  }`}
-                  title="Copy standard webhook URL"
-                >
-                  {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Target 2: Deployed Firebase Cloud Function */}
-            <div className="p-4 rounded-xl border border-slate-800 bg-indigo-950/20 flex flex-col justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-weight-bold font-bold text-indigo-400 uppercase tracking-widest block font-sans">Firebase Native</span>
-                  <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-bold px-1.5 py-0.5 rounded-full border border-emerald-500/30 uppercase">Deployed</span>
-                </div>
-                <p className="text-xs font-bold text-slate-200 mt-1">Firebase Cloud Function Webhook</p>
-                <p className="text-[10px] text-slate-400 leading-normal mt-1.5">
-                  Highly persistent, direct serverless function responding with Cloud-integrated Firestore updates and instant background chatbot replies.
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 mt-2">
-                <div className="flex-1 bg-slate-900 border border-slate-800 px-2.5 py-1.5 rounded-lg text-[11px] text-indigo-200 break-all truncate select-all">
-                  https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/wasenderWebhook
-                </div>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(`https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/wasenderWebhook`);
-                    setIsFirebaseCopied(true);
-                    setTimeout(() => setIsFirebaseCopied(false), 2000);
-                  }}
-                  className={`p-2 rounded-lg border text-[11px] flex items-center justify-center transition-all shrink-0 ${
-                    isFirebaseCopied
-                      ? 'bg-emerald-600 border-emerald-500 text-white'
-                      : 'bg-slate-800 border-slate-700 hover:bg-slate-705 text-slate-300 hover:text-white'
-                  }`}
-                  title="Copy Firebase webhook URL"
-                >
-                  {isFirebaseCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Interactive Webhook Registration Form */}
-          <div className="bg-slate-950/50 rounded-xl border border-slate-800 p-4 font-mono">
-            <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block mb-2">Configure Webhook Receiver on WaSender API</span>
-            <p className="text-[10px] text-slate-400 leading-normal mb-3">
-              Enter whichever webhook URL you want to register! Choose the Standard URL to log activities inside this browser window instantly, or the Firebase Cloud Function URL to turn on fully autonomous, 24/7 background chatbot automation.
-            </p>
-            <div className="flex flex-col sm:flex-row items-stretch gap-2">
-              <input
-                type="url"
-                value={customWebhookUrl}
-                onChange={(e) => setCustomWebhookUrl(e.target.value)}
-                placeholder="Paste Webhook URL here..."
-                className="flex-1 min-w-0 bg-slate-900 hover:bg-slate-900 border border-slate-800 px-3.5 py-2.5 rounded-lg text-xs font-mono text-slate-250 placeholder-slate-650 outline-none focus:border-indigo-500 transition-all text-white"
-              />
-              <div className="flex items-stretch gap-1.5 sm:shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setCustomWebhookUrl(`https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/wasenderWebhook`)}
-                  className="px-2.5 rounded-lg border border-slate-800 text-slate-400 text-[10px] bg-slate-900 hover:bg-slate-850 hover:text-white transition-all font-bold"
-                  title="Autofill standard Firebase URL"
-                >
-                  Fill Firebase
-                </button>
-                <button
-                  type="button"
-                  disabled={isUpdatingWebhook}
-                  onClick={() => updateWebhookOnServer(customWebhookUrl)}
-                  className={`px-4 rounded-lg text-xs font-bold font-sans flex items-center justify-center gap-2 transition-all shrink-0 active:scale-95 disabled:opacity-50 ${
-                    webhookUpdateSuccess
-                      ? 'bg-emerald-600 text-white shadow-lg'
-                      : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg'
-                  }`}
-                >
-                  {isUpdatingWebhook ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Registering...
-                    </>
-                  ) : webhookUpdateSuccess ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-white animate-bounce" />
-                      Successfully Set!
-                    </>
-                  ) : (
-                    <>
-                      Apply & Save Target
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Webhook Connectivity & Reachability Validation Dashboard */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono">
-            {/* Gateway Connectivity Box */}
-            <div className={`p-4 rounded-xl border ${
-              isWebhookReached 
-                ? 'bg-emerald-950/40 border-emerald-800 text-emerald-200 font-mono text-[11px]' 
-                : 'bg-amber-950/45 border-amber-800 text-amber-200 animate-pulse font-mono text-[11px]'
-            }`}>
-              <div className="flex items-center gap-2 mb-1.5 font-bold">
-                <div className={`w-2 h-2 rounded-full ${isWebhookReached ? 'bg-emerald-400 animate-pulse' : 'bg-amber-500 animate-pulse'}`} />
-                <span className="text-[10px] uppercase tracking-wider">Webhook Endpoint Reachability</span>
-              </div>
-              <p className="text-[11px] leading-relaxed text-slate-300">
-                {isWebhookReached 
-                  ? `🟢 REACHED & ACTIVE: Webhook listener has successfully received ${webhookLogs.length} events from the outer web (confirmed reachability).`
-                  : '🟡 WAITING FOR INCOMING WEBHOOKS... Click "Test Webhook Extraction Pipeline" button or scan components to check reachability.'
-                }
-              </p>
-            </div>
-
-            {/* Device Scanner Extractor Box */}
-            <div className={`p-4 rounded-xl border ${
-              isDeviceConnectedViaWebhook 
-                ? 'bg-indigo-950/40 border-indigo-800 text-indigo-200 font-mono text-[11px]' 
-                : connectionState.connected 
-                  ? 'bg-amber-950/30 border-amber-800/60 text-amber-200 font-mono text-[11px]' 
-                  : 'bg-slate-950/80 border-slate-800 text-slate-400 font-mono text-[11px]'
-            }`}>
-              <div className="flex items-center gap-2 mb-1.5 font-bold">
-                <div className={`w-2 h-2 rounded-full ${isDeviceConnectedViaWebhook ? 'bg-indigo-400 animate-pulse' : 'bg-slate-600'}`} />
-                <span className="text-[10px] uppercase tracking-wider">Device Scan Webhook Verification</span>
-              </div>
-              <p className="text-[11px] leading-relaxed text-slate-300">
-                {isDeviceConnectedViaWebhook 
-                  ? `✅ DEVICE CONNECTED (WEBHOOK): Phone +${connectionLogs[0].phone || 'N/A'} is fully verified connected via decoded webhook metadata payload.`
-                  : connectionState.connected
-                    ? 'ℹ️ SCAN DETECTED: QR scanned successfully. Awaiting final state update to log inside active console.'
-                    : '⏳ WAITING SCAN: Please scan the QR code above. Once scanned successfully, connection logs will stream immediately.'
-                }
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-3 font-mono">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-              Active Console Logs ({webhookLogs.length})
-            </div>
-
-            {webhookLogs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-center gap-2 text-slate-500 bg-slate-950/40 rounded-xl border border-slate-850/30">
-                <AlertCircle className="w-5 h-5 text-slate-600 animate-pulse" />
-                <p className="text-xs">No webhooks captured yet for your workspace.</p>
-                <p className="text-[9px] text-slate-600 max-w-sm">
-                  Click the "Test Webhook Extraction Pipeline" button above to simulate a link scan and trace code performance immediately.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-                {webhookLogs.map((log) => {
-                  const isExpanded = expandedLogId === log.id;
-                  return (
-                    <div 
-                      key={log.id} 
-                      className="bg-slate-950/60 hover:bg-slate-950 rounded-xl border border-slate-850 p-4 transition-all"
-                    >
-                      <div 
-                        onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none"
-                      >
-                        <div className="flex items-center gap-2.5 flex-wrap">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                            log.event && log.event.includes('connection') 
-                              ? 'bg-indigo-950/80 text-indigo-400 border border-indigo-900/50' 
-                              : 'bg-emerald-950/80 text-emerald-400 border border-emerald-900/50'
-                          }`}>
-                            {log.event}
-                          </span>
-                          <span className="text-xs text-slate-200 font-bold">
-                            {log.phone ? `Phone: +${log.phone}` : 'Phone: N/A'}
-                          </span>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                            log.connected ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400'
-                          }`}>
-                            {log.connected ? 'Connected' : 'Disconnected'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 text-[10px] text-slate-500">
-                          <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
-                          {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}
-                        </div>
-                      </div>
-
-                      {isExpanded && (
-                        <div className="mt-4 pt-3 border-t border-slate-850/60 space-y-4 animate-scale-up">
-                          <div className="space-y-1.5 bg-slate-950/85 p-3 rounded-lg border border-slate-900">
-                            <div className="text-[10px] text-indigo-400 font-bold uppercase tracking-wider mb-2 border-b border-slate-900 pb-1 flex items-center justify-between">
-                              <span>Webhook Handshake Processing Chain</span>
-                              <span className="text-slate-500 font-normal">server.ts:743</span>
-                            </div>
-                            {Array.isArray(log.steps) ? log.steps.map((step, idx) => (
-                              <div key={idx} className="flex gap-2 text-[11px] leading-relaxed">
-                                <span className="text-emerald-400 font-bold flex-shrink-0">✓</span>
-                                <span className="text-slate-300">{step}</span>
-                              </div>
-                            )) : (
-                              <div className="text-[11px] text-slate-400">Pipeline logs processed successfully.</div>
-                            )}
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
-                              <span>Payload Metadata (payload.data) Passed:</span>
-                              <span className="text-slate-500">JSON Format</span>
-                            </div>
-                            <pre className="text-[10px] overflow-x-auto bg-slate-950 p-3 rounded-lg border border-slate-900 text-indigo-300 select-all max-h-48 overflow-y-auto">
-                              {JSON.stringify(log.payloadReceived, null, 2)}
-                            </pre>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+    </div>
       ) : (
         /* REALTIME INBOX TAB */
         <div className="flex-1 bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col md:flex-row h-[600px]" id="realtime-inbox">
@@ -1311,7 +1141,7 @@ export const WhatsAppPage = () => {
               </div>
             )}
 
-            <div className="flex flex-col gap-2 w-full">
+            <div className="flex flex-col gap-2 w-full font-sans">
               <button
                 onClick={() => {
                   setShowSuccessModal(false);
@@ -1331,6 +1161,8 @@ export const WhatsAppPage = () => {
           </div>
         </div>
       )}
+
+
     </div>
   );
 };

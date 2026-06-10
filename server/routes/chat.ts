@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { GoogleGenAI } from "@google/genai";
-import { generateRagResponse } from "../../src/services/ragService.ts";
-import { detectBookingIntent, extractReservationDetails } from "../../src/services/reservationService.ts";
+import firebaseConfig from "../../firebase-applet-config.json";
+import { generateRagResponse } from "../../src/services/ragServiceServer.ts";
+import { detectBookingIntent, extractReservationDetails } from "../../src/services/reservationServiceServer.ts";
+import { getFirebaseAIModel } from "../firebaseAi.ts";
 
 const router = Router();
 
@@ -22,10 +23,37 @@ router.post("/api/chat", async (req, res) => {
     let aiImages: any[] = [];
 
     if (useRag !== false) {
-      // Default RAG
-      const response = await generateRagResponse(apiKey, message);
-      aiResponseText = response.text;
-      aiImages = response.images || [];
+      try {
+        // Default RAG
+        const response = await generateRagResponse(apiKey, message);
+        aiResponseText = response.text;
+        aiImages = response.images || [];
+      } catch (ragError: any) {
+        console.warn("RAG pipeline failed, falling back to direct AI generation:", ragError?.message || ragError);
+        
+        // Custom contexts (frontend docs) fallback
+        const docsList = documents || [];
+        const context = docsList
+          .filter((doc: any) => doc.status === 'Processed')
+          .map((doc: any) => `Source: ${doc.name}\nContent: ${doc.content || ''}`)
+          .join('\n\n---\n\n');
+
+        const systemInstruction = `
+          You are a helpful AI assistant.
+          ${customInstructions || ''}
+          Use the following context to answer their questions.
+          Context:
+          ${context}
+        `;
+
+        const aiModel = getFirebaseAIModel({
+          modelName: "gemini-3.5-flash",
+          systemInstruction: systemInstruction
+        });
+
+        const response = await aiModel.generateContent(message);
+        aiResponseText = response.response.text();
+      }
     } else {
       // Custom contexts (frontend docs)
       const docsList = documents || [];
@@ -42,13 +70,13 @@ router.post("/api/chat", async (req, res) => {
         ${context}
       `;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-      const result = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: [{ role: 'user', parts: [{ text: message }] }],
-        config: { systemInstruction },
+      const aiModel = getFirebaseAIModel({
+        modelName: "gemini-3.5-flash",
+        systemInstruction: systemInstruction
       });
-      aiResponseText = result.text || "";
+
+      const response = await aiModel.generateContent(message);
+      aiResponseText = response.response.text();
     }
 
     res.json({

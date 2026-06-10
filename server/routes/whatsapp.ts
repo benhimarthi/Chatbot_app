@@ -5,7 +5,9 @@ import {
   fetchQRCode, 
   setWebhook, 
   getConnectionState, 
-  sendTextMessage 
+  sendTextMessage,
+  createSession,
+  connectSession
 } from "../../src/services/wasenderService.ts";
 import { 
   restGetDoc, 
@@ -15,7 +17,8 @@ import {
   authAdmin,
   dbAdmin
 } from "../firebaseAdmin.ts";
-import { generateRagResponse } from "../../src/services/ragService.ts";
+import { generateRagResponse } from "../../src/services/ragServiceServer.ts";
+import firebaseConfig from "../../firebase-applet-config.json";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth.ts";
 
 const router = Router();
@@ -33,18 +36,46 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
     let dbDocExists = false;
     let savedWebhookUrl = "";
     let existingObj: any = {};
-    let customSessionId = "";
+    let whatsappSessionId = "";
+    let apiKey = "";
     try {
       const snap = await restGetDoc(whatsappDocPath, idToken);
       if (snap.exists) {
         dbDocExists = true;
         existingObj = snap.data() || {};
         savedWebhookUrl = existingObj.customWebhookUrl || existingObj.webhookUrl || "";
-        customSessionId = existingObj.customSessionId || "";
+        whatsappSessionId = existingObj.whatsappSessionId || "";
+        apiKey = existingObj.apiKey || "";
       }
     } catch (dbErr: any) {
       console.warn("Could not fetch existing whatsapp doc from DB:", dbErr.message);
     }
+
+    // MFA / Phone Requirement Validation
+    let phoneToUse = req.body.phone || existingObj.mfaPhone || existingObj.phone || "";
+
+    if (!phoneToUse || !phoneToUse.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Phone number is required to link a WhatsApp session.",
+        details: "Please specify a valid phone number (including country code) when generating the connection QR code."
+      });
+    }
+
+    const cleanPhone = phoneToUse.replace(/\D/g, '');
+    if (cleanPhone.length < 7) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid phone number format.",
+        details: "The phone number must contain at least 7 digits (including country code)."
+      });
+    }
+
+    // Capture variables and automatically satisfy/promote MFA status variables
+    const mfaPhone = cleanPhone;
+    existingObj.mfaEnabled = true;
+    existingObj.mfaPhone = cleanPhone;
+    existingObj.phone = cleanPhone;
 
     let qrCode = "";
     let alreadyConnected = false;
@@ -52,11 +83,13 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
     // Helper to recursively inspect API responses for connected states like 'open', 'connected', etc.
     const isInstanceConnected = (obj: any): boolean => {
       if (!obj) return false;
+      if (obj === true) return true;
       if (typeof obj === 'string') {
         const s = obj.toLowerCase();
         return s === 'open' || s === 'connected' || s === 'online' || s === 'active';
       }
       if (typeof obj === 'object') {
+        if (obj.connected === true) return true;
         for (const k of Object.keys(obj)) {
           if (isInstanceConnected(obj[k])) return true;
         }
@@ -64,85 +97,90 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
       return false;
     };
 
-    // 2. We decide whether we need to call createInstance based on real-time availability on WaSender API
-    // This allows seamless connection to pre-existing or missing instances regardless of local DB markers.
-    try {
-      console.log(`Checking existing connection/QR code on WaSender API for instance ${instanceName} with custom Session ID: ${customSessionId}...`);
-      const qrResponse = await fetchQRCode(instanceName, customSessionId);
-      qrCode = qrResponse?.qrcode?.base64 || qrResponse?.base64 || qrResponse?.qrcode?.code || "";
-      console.log(`Successfully fetched QR Code/Response for existing instance ${instanceName}`);
+    const webhookUrl = savedWebhookUrl || "https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/wasenderWebhook";
 
-      if (!qrCode) {
-        console.log(`QR code is empty. Double-checking connection state...`);
-        const connResponse = await getConnectionState(instanceName, customSessionId);
-        if (isInstanceConnected(connResponse)) {
+    // 2. We check if the user already has a session attached to their account
+    if (whatsappSessionId) {
+      console.log(`Checking existing attachment connection state on WaSender API for session: ${whatsappSessionId}...`);
+      try {
+        const connResponse = await getConnectionState(instanceName, undefined, apiKey);
+        if (isInstanceConnected(connResponse) || connResponse.connected) {
           alreadyConnected = true;
-          console.log(`Instance is already connected in existing session.`);
+          console.log(`Instance session ${whatsappSessionId} is already connected.`);
         } else {
-          throw new Error(`Instance exists but returned no QR code and is not connected.`);
-        }
-      }
-    } catch (qrErr: any) {
-      // Determine if the instance actually doesn't exist on the WaSender API
-      const errStatus = qrErr.status || qrErr.response?.status;
-      const errBodyStr = qrErr.response?.data ? JSON.stringify(qrErr.response.data).toLowerCase() : "";
-      const errMsg = String(qrErr.message || "").toLowerCase();
-      const isNotFound = errStatus === 404 || 
-                         errMsg.includes("not found") || 
-                         errMsg.includes("404") || 
-                         errBodyStr.includes("not found") || 
-                         errBodyStr.includes("404") ||
-                         errBodyStr.includes("wasnotfound") ||
-                         errBodyStr.includes("was not found");
-
-      if (isNotFound) {
-        console.log(`Instance ${instanceName} does not exist on WaSender API. Creating it now...`);
-        try {
-          await createInstance(instanceName);
-          console.log(`Successfully created/recreated new instance ${instanceName}`);
-
-          const qrResponse = await fetchQRCode(instanceName, customSessionId);
+          console.log(`Instance session ${whatsappSessionId} is disconnected. Initiating connection on WaSender first...`);
+          await connectSession(instanceName, undefined, whatsappSessionId);
+          // Wait slightly for connection initialization to propagate
+          await new Promise(resolve => setTimeout(resolve, 800));
+          console.log(`Requesting the qrcode for session: ${whatsappSessionId}...`);
+          const qrResponse = await fetchQRCode(instanceName, undefined, whatsappSessionId);
           qrCode = qrResponse?.qrcode?.base64 || qrResponse?.base64 || qrResponse?.qrcode?.code || "";
-          
-          if (!qrCode) {
-            console.log(`QR code is empty for newly created instance. Double-checking connection state...`);
-            const connResponse = await getConnectionState(instanceName, customSessionId);
-            if (isInstanceConnected(connResponse)) {
-              alreadyConnected = true;
-            } else {
-              throw new Error(`Instance created but returned no QR code and is not connected. API Response: ${JSON.stringify(qrResponse)}. Conn State: ${JSON.stringify(connResponse)}`);
-            }
-          }
-        } catch (createErr: any) {
-          console.error("Instance creation/QR download after 404 failed:", createErr.message || createErr);
-          throw createErr;
         }
-      } else {
-        // It failed with some error other than 404 (e.g., temporal timeout, network error)
-        // Check if it is connected anyway
-        try {
-          const connResponse = await getConnectionState(instanceName, customSessionId);
-          if (isInstanceConnected(connResponse)) {
-            alreadyConnected = true;
-            console.log(`Instance is already connected (caught in general error handler)`);
-          } else {
-            throw new Error(`${qrErr.message}. Conn State: ${JSON.stringify(connResponse)}`);
-          }
-        } catch (connErr: any) {
-          throw new Error(`${qrErr.message}. Also connection check failed: ${connErr.message}`);
-        }
+      } catch (qrErr: any) {
+        console.warn("Retrying/Re-initializing session due to status code/errors:", qrErr.message);
+        whatsappSessionId = ""; // mark for session recreation
       }
     }
 
-    // 3. Webhook automatic registration skipped per user request
-    // We do NOT call setWebhook on WaSender API anymore. We preserve the saved connection webhook path.
-    const webhookUrl = savedWebhookUrl || "https://us-central1-glass-arcanum-480721-n7.cloudfunctions.net/wasenderWebhook";
+    // 3. User has no session attached, we create a whatsapp session
+    if (!whatsappSessionId) {
+      console.log(`No WaSender session found attached for ${instanceName}. Creating new session...`);
+      try {
+        const sessionPhone = mfaPhone.startsWith('+') ? mfaPhone : `+${mfaPhone}`;
+        const createRes = await createSession(instanceName, sessionPhone, webhookUrl);
+        console.log(`Session creation response success:`, JSON.stringify(createRes));
+
+        const sessionData = createRes?.data || createRes || {};
+        whatsappSessionId = sessionData.id;
+        apiKey = sessionData.api_key;
+        
+        const statusStr = String(sessionData.status || '').toLowerCase();
+        alreadyConnected = statusStr === 'connected' || statusStr === 'open' || statusStr === 'active';
+
+        // Update database info
+        existingObj.whatsappSessionId = whatsappSessionId;
+        existingObj.apiKey = apiKey;
+        existingObj.connected = alreadyConnected;
+
+        // Save absolutely everything from the session creation response
+        existingObj.webhook_secret = sessionData.webhook_secret || "";
+        existingObj.webhookSecret = sessionData.webhook_secret || ""; // camelCase support
+        existingObj.id = sessionData.id || "";
+        existingObj.name = sessionData.name || "";
+        existingObj.phone_number = sessionData.phone_number || "";
+        existingObj.status = sessionData.status || "";
+        existingObj.account_protection = sessionData.account_protection !== undefined ? sessionData.account_protection : null;
+        existingObj.log_messages = sessionData.log_messages !== undefined ? sessionData.log_messages : null;
+        existingObj.read_incoming_messages = sessionData.read_incoming_messages !== undefined ? sessionData.read_incoming_messages : null;
+        existingObj.webhook_url = sessionData.webhook_url || "";
+        existingObj.webhook_enabled = sessionData.webhook_enabled !== undefined ? sessionData.webhook_enabled : null;
+        existingObj.webhook_events = sessionData.webhook_events || [];
+        existingObj.api_key = sessionData.api_key || "";
+        existingObj.created_at = sessionData.created_at || "";
+        existingObj.updated_at = sessionData.updated_at || "";
+
+        if (!alreadyConnected) {
+          console.log(`Newly created session ${whatsappSessionId} not connected yet. Initiating WaSender connection first...`);
+          await connectSession(instanceName, undefined, whatsappSessionId);
+          // Wait slightly for connection initialization to propagate
+          await new Promise(resolve => setTimeout(resolve, 800));
+          console.log(`Requesting QR for newly created/connected session: ${whatsappSessionId}...`);
+          const qrResponse = await fetchQRCode(instanceName, null, whatsappSessionId);
+          qrCode = qrResponse?.qrcode?.base64 || qrResponse?.base64 || qrResponse?.qrcode?.code || "";
+        }
+      } catch (createErr: any) {
+        console.error("Instance creation or session registration failed:", createErr.message || createErr);
+        throw createErr;
+      }
+    }
 
     // 4. Update state documents in Firestore
     await restSetDoc(whatsappDocPath, {
       ...existingObj,
       instanceName,
       instanceCreated: true,
+      whatsappSessionId: whatsappSessionId || existingObj.whatsappSessionId || "",
+      apiKey: apiKey || existingObj.apiKey || "",
       connected: alreadyConnected || existingObj.connected || false,
       customWebhookUrl: webhookUrl,
       updatedAt: new Date(),
@@ -161,7 +199,9 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
       instanceName,
       qrCode,
       connected: alreadyConnected || existingObj.connected || false,
-      customWebhookUrl: webhookUrl
+      customWebhookUrl: webhookUrl,
+      whatsappSessionId,
+      apiKey
     });
   } catch (error: any) {
     console.error("WhatsApp Connection failed:", error);
@@ -180,28 +220,46 @@ router.get("/api/whatsapp/status", requireAuth, async (req: AuthenticatedRequest
 
     const instanceName = `instance_${workspaceId}`;
     
-    // Fetch existing settings first to see if there is a custom session ID configured
+    // Fetch existing settings first
     const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
     const snap = await restGetDoc(whatsappDocPath, idToken);
     let phone = "";
     let existingData: any = {};
-    let customSessionId = "";
+    let apiKey = "";
+    let whatsappSessionId = "";
     if (snap.exists) {
       existingData = snap.data() || {};
       phone = snap.data()?.phone || "";
-      customSessionId = existingData.customSessionId || "";
+      apiKey = existingData.apiKey || "";
+      whatsappSessionId = existingData.whatsappSessionId || "";
     }
 
-    const connResponse: any = await getConnectionState(instanceName, customSessionId);
+    if (!whatsappSessionId) {
+      return res.json({
+        success: true,
+        instanceName,
+        connected: false,
+        state: 'close',
+        phone: existingData.phone || "",
+        whatsappSessionId: "",
+        customWebhookUrl: existingData.customWebhookUrl || existingData.webhookUrl || "",
+        mfaEnabled: !!existingData.mfaEnabled,
+        mfaPhone: existingData.mfaPhone || ""
+      });
+    }
+
+    const connResponse: any = await getConnectionState(instanceName, undefined, apiKey);
     
-    // Deep structural and recursive checking helper for maximal robustness
+    // Deep structural checking helper for maximal robustness
     const isInstanceConnected = (obj: any): boolean => {
       if (!obj) return false;
+      if (obj === true) return true;
       if (typeof obj === 'string') {
         const s = obj.toLowerCase();
         return s === 'open' || s === 'connected' || s === 'online' || s === 'active';
       }
       if (typeof obj === 'object') {
+        if (obj.connected === true) return true;
         for (const k of Object.keys(obj)) {
           if (isInstanceConnected(obj[k])) return true;
         }
@@ -210,7 +268,7 @@ router.get("/api/whatsapp/status", requireAuth, async (req: AuthenticatedRequest
     };
 
     const state = connResponse?.instance?.state || connResponse?.state || connResponse?.instance?.status || connResponse?.status || 'close';
-    const connected = isInstanceConnected(connResponse);
+    const connected = connResponse.connected === true || isInstanceConnected(connResponse);
 
     // Try to capture phone number dynamically from connection state response if available
     if (connected) {
@@ -220,7 +278,8 @@ router.get("/api/whatsapp/status", requireAuth, async (req: AuthenticatedRequest
                        connResponse?.instance?.me?.user ||
                        connResponse?.me?.id || 
                        connResponse?.me?.jid || 
-                       connResponse?.me?.user;
+                       connResponse?.me?.user ||
+                       connResponse?.phone;
       if (rawPhone) {
         phone = String(rawPhone).split(':')[0].split('@')[0];
       }
@@ -241,9 +300,11 @@ router.get("/api/whatsapp/status", requireAuth, async (req: AuthenticatedRequest
       instanceName,
       connected,
       state,
-      phone,
-      customSessionId,
-      customWebhookUrl: existingData.customWebhookUrl || existingData.webhookUrl || ""
+      phone: phone || existingData.phone || "",
+      whatsappSessionId,
+      customWebhookUrl: existingData.customWebhookUrl || existingData.webhookUrl || "",
+      mfaEnabled: !!existingData.mfaEnabled,
+      mfaPhone: existingData.mfaPhone || ""
     });
   } catch (error: any) {
     console.error("WhatsApp Status check failed:", error);
@@ -264,19 +325,21 @@ router.post("/api/whatsapp/send", requireAuth, async (req: AuthenticatedRequest,
 
     const instanceName = `instance_${workspaceId}`;
     
-    // Fetch customSessionId from Firestore if any
-    let customSessionId = "";
+    // Fetch whatsappSessionId and apiKey from Firestore if any
+    let whatsappSessionId = "";
+    let apiKey = "";
     try {
       const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
       const snap = await restGetDoc(whatsappDocPath, idToken);
       if (snap.exists) {
-        customSessionId = snap.data()?.customSessionId || "";
+        whatsappSessionId = snap.data()?.whatsappSessionId || "";
+        apiKey = snap.data()?.apiKey || "";
       }
     } catch (err) {
-      console.warn("Could not retrieve custom session id on send:", err);
+      console.warn("Could not retrieve whatsapp session id on send:", err);
     }
 
-    const sendResult = await sendTextMessage(instanceName, recipientPhone, messageText, customSessionId);
+    const sendResult = await sendTextMessage(instanceName, recipientPhone, messageText, whatsappSessionId, apiKey);
 
     // Normalize message and store in DB
     const messageId = `msg_${Math.random().toString(36).substr(2, 9)}_${Date.now()}`;
@@ -379,44 +442,6 @@ router.post("/api/whatsapp/update-webhook", requireAuth, async (req: Authenticat
   } catch (error: any) {
     console.error("Failed to update webhook URL:", error);
     res.status(500).json({ error: error.message || "Failed to update webhook URL" });
-  }
-});
-
-// API: Register/Update a Custom WaSender Session ID for the active workspace
-router.post("/api/whatsapp/update-session-id", requireAuth, async (req: AuthenticatedRequest, res) => {
-  try {
-    const workspaceId = req.workspaceId!;
-    const idToken = req.idToken!;
-    const { customSessionId } = req.body;
-
-    const instanceName = `instance_${workspaceId}`;
-    console.log(`Setting custom session ID for workspace ${workspaceId} to: ${customSessionId}`);
-
-    const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
-    let existingData = {};
-    try {
-      const snap = await restGetDoc(whatsappDocPath, idToken);
-      if (snap.exists) {
-        existingData = snap.data() || {};
-      }
-    } catch (dbErr) {
-      console.warn("Could not fetch existing whatsapp doc:", dbErr);
-    }
-
-    await restSetDoc(whatsappDocPath, {
-      ...existingData,
-      instanceName,
-      customSessionId: (customSessionId || "").trim(),
-      updatedAt: new Date()
-    }, idToken);
-
-    res.json({
-      success: true,
-      message: `Successfully updated WaSender Session ID configuration.`
-    });
-  } catch (error: any) {
-    console.error("Failed to update custom Session ID:", error);
-    res.status(500).json({ error: error.message || "Failed to update custom Session ID" });
   }
 });
 
@@ -694,15 +719,14 @@ Important Operational mandates:
                   const ragRes = await generateRagResponse(workspaceId, content);
                   replyText = ragRes.text;
                 } catch (ragErr: any) {
-                  console.warn(`RAG pipeline failed, falling back to direct legacy Gemini fallback:`, ragErr.message);
-                  const { GoogleGenAI } = await import("@google/genai");
-                  const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-                  const result = await ai.models.generateContent({
-                    model: "gemini-3.5-flash",
-                    contents: [{ role: 'user', parts: [{ text: content }] }],
-                    config: { systemInstruction },
+                  console.warn(`RAG pipeline failed, falling back to direct Vertex AI fallback:`, ragErr.message);
+                  const { getFirebaseAIModel } = await import("../firebaseAi.ts");
+                  const aiModel = getFirebaseAIModel({
+                    modelName: "gemini-3.5-flash",
+                    systemInstruction: systemInstruction
                   });
-                  replyText = result.text || "";
+                  const response = await aiModel.generateContent(content);
+                  replyText = response.response.text();
                 }
 
                 if (replyText.trim()) {
@@ -710,16 +734,16 @@ Important Operational mandates:
                   if (wasenderApiKey && wasenderApiKey !== "your_bearer_token") {
                     const toPhone = remoteJid; // eg: 2126...00@s.whatsapp.net
                     
-                    // Fetch customSessionId from Firestore if any
+                    // Fetch whatsappSessionId from Firestore if any
                     let finalSessionId = process.env.SESSION_ID || "your_session_id";
                     try {
                       const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
                       const snap = await restGetDoc(whatsappDocPath);
-                      if (snap.exists && snap.data()?.customSessionId) {
-                        finalSessionId = snap.data().customSessionId;
+                      if (snap.exists && snap.data()?.whatsappSessionId) {
+                        finalSessionId = snap.data().whatsappSessionId;
                       }
                     } catch (dbErr) {
-                      console.warn("Could not retrieve custom session id in webhook Chatbot:", dbErr);
+                      console.warn("Could not retrieve whatsapp session id in webhook Chatbot:", dbErr);
                     }
                     
                     const cleanSessionId = finalSessionId.trim().replace(/^instance_/, '');
@@ -868,6 +892,92 @@ Important Operational mandates:
   } catch (error) {
     console.error("Webhook processing error:", error);
     res.status(200).send("Error logged"); 
+  }
+});
+
+// API: Verifies that the client actually linked/verified their phone number using Firebase Auth
+router.post("/api/whatsapp/mfa/verify-auth", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const workspaceId = req.workspaceId!;
+    const idToken = req.idToken!;
+
+    // Decode the Firebase JWT via Admin SDK to check for a linked, verified phone number
+    const decoded = await authAdmin.verifyIdToken(idToken);
+    const verifiedPhone = decoded.phone_number;
+
+    if (!verifiedPhone) {
+      return res.status(400).json({
+        success: false,
+        error: "Verified phone number not found in active session status.",
+        details: "Please link your phone number to your active Google/Firebase Auth account using standard Phone Auth/Verification first."
+      });
+    }
+
+    // Clean phone number format for DB
+    const cleanPhone = verifiedPhone.replace(/\D/g, '');
+
+    const instanceName = `instance_${workspaceId}`;
+    const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
+
+    // Fetch existing settings
+    let existingData: any = {};
+    try {
+      const snap = await restGetDoc(whatsappDocPath, idToken);
+      if (snap.exists) {
+        existingData = snap.data() || {};
+      }
+    } catch (err) {}
+
+    // Persist verified MFA state in database
+    await restSetDoc(whatsappDocPath, {
+      ...existingData,
+      mfaEnabled: true,
+      mfaPhone: cleanPhone,
+      phone: cleanPhone, // Update primary WhatsApp connection phone too
+      updatedAt: new Date().toISOString()
+    }, idToken);
+
+    res.json({
+      success: true,
+      message: "Phone Multi-Factor Authentication successfully enrolled via Firebase Auth!",
+      mfaPhone: cleanPhone
+    });
+  } catch (error: any) {
+    console.error("Firebase MFA Auth validation failed:", error);
+    res.status(500).json({ error: error.message || "Failed to authenticate Firebase phone credential." });
+  }
+});
+
+// API: Disables Phone MFA security enforcement
+router.post("/api/whatsapp/mfa/disable", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const workspaceId = req.workspaceId!;
+    const idToken = req.idToken!;
+
+    const instanceName = `instance_${workspaceId}`;
+    const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
+
+    const snap = await restGetDoc(whatsappDocPath, idToken);
+    if (!snap.exists) {
+      return res.status(400).json({ error: "No active WhatsApp configuration document exists." });
+    }
+
+    const data = snap.data() || {};
+
+    await restSetDoc(whatsappDocPath, {
+      ...data,
+      mfaEnabled: false,
+      mfaPhone: null,
+      updatedAt: new Date().toISOString()
+    }, idToken);
+
+    res.json({
+      success: true,
+      message: "Multi-Factor Authentication successfully disabled."
+    });
+  } catch (error: any) {
+    console.error("MFA disable failed:", error);
+    res.status(500).json({ error: error.message || "MFA de-authorization process failed." });
   }
 });
 

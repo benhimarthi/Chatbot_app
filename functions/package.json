@@ -11,7 +11,8 @@
     "firebase-functions": "^6.2.0",
     "firebase-admin": "^12.7.0",
     "axios": "^1.7.9",
-    "@google/genai": "^1.29.0"
+    "@google/genai": "^1.29.0",
+    "@pinecone-database/pinecone": "^7.1.0"
   },
   "devDependencies": {
     "firebase-functions-test": "^3.1.0"

@@ -1,5 +1,44 @@
+import firebaseConfig from "../../firebase-applet-config.json";
 import { Reservation, ReservationDraft, ReservationState, ReservationStep, RestaurantConfig } from "../types";
 import { getReservationsInRange } from "../firebase";
+import { getFirebaseAIModel } from "../../server/firebaseAi.ts";
+
+const DEFAULT_MODEL = "gemini-3.5-flash";
+
+/**
+ * Extracts reservation details from the user's message using AI.
+ */
+export const extractReservationDetails = async (message: string, currentDraft: ReservationDraft): Promise<Partial<ReservationDraft>> => {
+  const prompt = `
+    Extract reservation details from the following user message. 
+    Only extract fields that are clearly present. 
+    
+    User Message: "${message}"
+    Current Context: ${JSON.stringify(currentDraft)}
+    
+    Fields to extract:
+    - guests (number)
+    - date (YYYY-MM-DD) - handle relative dates like "today", "tomorrow", "next Friday" relative to today: ${new Date().toISOString().split('T')[0]}
+    - time (HH:mm)
+    - name (string)
+    - phone (string)
+    
+    Return a JSON object with any extracted fields. If a field is not found, do not include it.
+  `;
+
+  try {
+    const aiModel = getFirebaseAIModel({
+      modelName: DEFAULT_MODEL,
+      responseMimeType: "application/json"
+    });
+    const response = await aiModel.generateContent(prompt);
+    const text = response.response.text();
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("Extraction failed", e);
+    return {};
+  }
+};
 
 /**
  * Validates a specific value based on restaurant configuration.
@@ -124,4 +163,27 @@ export const getNextStep = (draft: ReservationDraft): ReservationStep => {
   if (!draft.name) return "ask_name";
   if (!draft.phone) return "ask_phone";
   return "confirm";
+};
+
+/**
+ * Detects if the user wants to start a reservation.
+ */
+export const detectBookingIntent = async (message: string): Promise<boolean> => {
+  const prompt = `
+    Does the following message express an intent to make a restaurant reservation or book a table?
+    Message: "${message}"
+    
+    Respond only with "true" or "false".
+  `;
+  
+  try {
+    const aiModel = getFirebaseAIModel({
+      modelName: DEFAULT_MODEL
+    });
+    const response = await aiModel.generateContent(prompt);
+    const text = response.response.text();
+    return text.toLowerCase().includes("true");
+  } catch (e) {
+    return /book|reserve|table|reservation/i.test(message);
+  }
 };
