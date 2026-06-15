@@ -28,6 +28,17 @@ if (admin.apps.length === 0) {
 const databaseId = firebaseConfig.firestoreDatabaseId || "(default)";
 const db = admin.firestore(databaseId);
 
+const { createReservationModule } = require("./reservation");
+const reservationController = createReservationModule(db, admin);
+
+/**
+ * HTTPS Cloud Function: CRUD API for Reservations
+ * Robust REST API representing the reservation system following full SOLID and Clean Architecture standards.
+ */
+exports.reservations = functions.https.onRequest(async (req, res) => {
+  return reservationController.handle(req, res);
+});
+
 /**
  * Appends a telemetry log item to the historical array in workspaces/{id}/whatsapp/logs_history
  */
@@ -299,7 +310,7 @@ exports.wasenderWebhook = functions.https.onRequest(async (req, res) => {
 
           // 3. Dispatch reply to customer's phone via WaSender
           await axios.post(
-            `https://api.wasenderapi.com/api/sessions/${cleanSessionId}/messages/text`,
+            `https://www.wasenderapi.com/api/sessions/${cleanSessionId}/messages/text`,
             {
               to: customerPhone,
               text: replyText

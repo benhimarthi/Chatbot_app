@@ -130,10 +130,24 @@ export const clearChatHistory = async (userId: string) => {
   }
 };
 
-export const updateUserSettings = async (userId: string, settings: { businessName?: string; customInstructions?: string; apiKey?: string; displayName?: string; subscriptionPlan?: string }) => {
+export const updateUserSettings = async (userId: string, settings: { businessName?: string; customInstructions?: string; apiKey?: string; displayName?: string; subscriptionPlan?: string; bookingEnabled?: boolean; capacity?: number; reservationDuration?: number; openingHours?: { start: string; end: string } }) => {
   try {
     const userRef = doc(db, 'users', userId);
     await setDoc(userRef, settings, { merge: true });
+
+    // Also write customInstructions and bookingEnabled to the workspace item document
+    const workspaceRef = doc(db, 'workspaces', userId);
+    const workspaceUpdate: any = {
+      id: userId,
+      ownerId: userId
+    };
+    if (settings.customInstructions !== undefined) {
+      workspaceUpdate.customInstructions = settings.customInstructions;
+    }
+    if (settings.bookingEnabled !== undefined) {
+      workspaceUpdate.bookingEnabled = settings.bookingEnabled;
+    }
+    await setDoc(workspaceRef, workspaceUpdate, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${userId}`);
   }

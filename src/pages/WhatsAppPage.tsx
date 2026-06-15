@@ -67,6 +67,39 @@ export const WhatsAppPage = () => {
   const [mfaEnabled, setMfaEnabled] = React.useState<boolean>(false);
   const [mfaPhone, setMfaPhone] = React.useState<string>('');
   const [sessionPhoneInput, setSessionPhoneInput] = React.useState<string>('');
+  const [lastSentPhone, setLastSentPhone] = React.useState<string>('');
+  const [hasSession, setHasSession] = React.useState<boolean>(false);
+  const [isAwaitingScan, setIsAwaitingScan] = React.useState<boolean>(false);
+  const [qrCountdown, setQrCountdown] = React.useState<number>(60);
+  const generateQRRef = React.useRef<any>(null);
+
+  React.useEffect(() => {
+    generateQRRef.current = generateQR;
+  });
+
+  React.useEffect(() => {
+    if (!qrCode || connectionState.connected) {
+      setQrCountdown(60);
+      return;
+    }
+
+    setQrCountdown(60);
+
+    const interval = setInterval(() => {
+      setQrCountdown(prev => {
+        if (prev <= 1) {
+          console.log("[QR Timer] 60 seconds reached. Automatically regenerating QR code.");
+          if (generateQRRef.current) {
+            generateQRRef.current();
+          }
+          return 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [qrCode, connectionState.connected]);
 
   React.useEffect(() => {
     if (mfaPhone && !sessionPhoneInput) {
@@ -264,7 +297,7 @@ export const WhatsAppPage = () => {
 
   // Poll status while QR is active or during active setting view
   React.useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || isAwaitingScan) return;
     
     // Check status immediately
     checkStatus(currentUser);
@@ -275,7 +308,7 @@ export const WhatsAppPage = () => {
     }, 6000);
 
     return () => clearInterval(interval);
-  }, [currentUser]);
+  }, [currentUser, isAwaitingScan]);
 
   // Sub-second Real-time listener for workspace connection state changes (instant scan detection)
   React.useEffect(() => {
@@ -314,6 +347,7 @@ export const WhatsAppPage = () => {
 
         if (isNowConnected) {
           setQrCode(''); // Clear QR if connected successfully
+          setIsAwaitingScan(false);
         }
         
         // Mark first check as completed so subsequent changes can trigger celebration
@@ -464,9 +498,23 @@ export const WhatsAppPage = () => {
       const response = await axios.get('/api/whatsapp/status', {
         headers: { Authorization: `Bearer ${token}` }
       });
+      
+      const sessionExists = response.data?.whatsappSessionId || response.data?.sessionExists;
+      if (sessionExists) {
+        setHasSession(true);
+      }
+
       if (response.data?.success) {
         const isNowConnected = response.data.connected;
+        const registeredPhone = response.data.phone || '';
         
+        if (sessionExists && !isNowConnected) {
+          console.warn("[WhatsApp Status] Session exists but disconnected. Requesting QR code...");
+          setIsAwaitingScan(true);
+          generateQR(registeredPhone);
+          return;
+        }
+
         setConnectionState(prev => {
           const wasConnected = prev.connected;
           
@@ -497,12 +545,28 @@ export const WhatsAppPage = () => {
 
         if (isNowConnected) {
           setQrCode(''); // Clear QR if connected successfully
+          setIsAwaitingScan(false);
+          setErrorMessage('');
         }
         
         isFirstCheckRef.current = false;
+      } else {
+        if (sessionExists) {
+          const registeredPhone = response.data?.phone || '';
+          console.warn("[WhatsApp Status Error Response] Checking status failed and session exists. Requesting QR code...");
+          setIsAwaitingScan(true);
+          generateQR(registeredPhone);
+        }
       }
     } catch (err: any) {
       console.error("Error checking whatsapp status:", err);
+      const sessionExists = hasSession || err?.response?.data?.sessionExists;
+      const registeredPhone = err?.response?.data?.phone || mfaPhone || connectionState.phone || '';
+      if (sessionExists) {
+        console.warn("[WhatsApp Status Catch] Checking status threw error and session exists. Requesting QR code...");
+        setIsAwaitingScan(true);
+        generateQR(registeredPhone);
+      }
     } finally {
       setIsCheckingState(false);
     }
@@ -510,15 +574,20 @@ export const WhatsAppPage = () => {
 
   const [errorLogDetails, setErrorLogDetails] = React.useState<string>('');
 
-  const generateQR = async () => {
+  const generateQR = async (specificPhone?: string) => {
     if (!currentUser) return;
 
-    const targetPhone = sessionPhoneInput.trim() || mfaPhone.trim();
+    const targetPhone = (specificPhone || sessionPhoneInput || mfaPhone || connectionState.phone || '').trim();
     if (!targetPhone) {
       setErrorMessage("Please specify a valid phone number (including country code) in the dedicated connection field to link WhatsApp.");
       setErrorLogDetails("A phone number is required in order to register and provision your WhatsApp connection instance on the server.");
       return;
     }
+
+    // Format target phone number
+    const digits = targetPhone.replace(/\D/g, '');
+    const formattedPhone = digits ? `+${digits}` : '';
+    setLastSentPhone(formattedPhone);
 
     try {
       setIsGeneratingQR(true);
@@ -821,13 +890,25 @@ export const WhatsAppPage = () => {
                 <p className="text-[10px] text-gray-500 leading-normal">
                   Specify the phone number corresponding to the WhatsApp account you are connecting.
                 </p>
+                {sessionPhoneInput && (
+                  <div className="mt-1.5 text-[11px] font-mono font-medium text-indigo-600 bg-indigo-50/50 p-2 rounded-lg border border-indigo-100/50 flex items-center gap-1.5 animate-fade-in">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                    Pending WaSender API Target format: <strong className="text-gray-950">+{sessionPhoneInput.replace(/\D/g, '')}</strong>
+                  </div>
+                )}
+                {lastSentPhone && (
+                  <div className="mt-1.5 text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50/80 p-2 rounded-lg border border-emerald-100 flex items-center gap-1.5 animate-fade-in">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    Last phone sent to WaSender API: <span className="underline select-all text-emerald-900">{lastSentPhone}</span>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3 mt-1">
                 <button
                   type="button"
                   id="whatsapp-generate-qr-btn"
-                  onClick={generateQR}
+                  onClick={() => generateQR()}
                   disabled={isGeneratingQR || connectionState.connected}
                   className="px-6 py-2.5 rounded-xl bg-indigo-600 font-medium text-sm text-white hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 transition-colors flex items-center gap-2"
                 >
@@ -853,6 +934,16 @@ export const WhatsAppPage = () => {
               <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2 mb-2">
                 <QrCode className="w-4 h-4 text-indigo-600" /> Link QR QR-Scan Stage
               </h3>
+
+              {isAwaitingScan && !connectionState.connected && (
+                <div className="w-full max-w-xs mb-3 text-[11px] leading-normal font-sans text-amber-800 bg-amber-50 rounded-xl p-3 border border-amber-200/50 flex flex-col gap-1 text-left animate-pulse">
+                  <div className="font-bold flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                    Disconnected Session Detected
+                  </div>
+                  <span>Status checking was paused to avoid conflicts. Please scan this auto-requested QR code to link your account.</span>
+                </div>
+              )}
             
             <div className="w-64 h-64 border-2 border-dashed border-gray-100 rounded-xl my-4 bg-gray-50/50 flex items-center justify-center overflow-hidden p-2">
               {isGeneratingQR ? (
@@ -896,6 +987,26 @@ export const WhatsAppPage = () => {
                 </div>
               )}
             </div>
+
+            {qrCode && !connectionState.connected && !isGeneratingQR && (
+              <div className="w-64 flex flex-col gap-1.5 mb-4 animate-fade-in">
+                <div className="flex justify-between items-center text-[11px] text-gray-500 font-medium">
+                  <span className="flex items-center gap-1">
+                    <RefreshCw className="w-3.5 h-3.5 text-indigo-600 animate-spin" /> Auto-refreshing QR
+                  </span>
+                  <span className="font-mono text-indigo-600 font-bold">Expires in {qrCountdown}s</span>
+                </div>
+                <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-indigo-600 h-full transition-all duration-1000 ease-linear rounded-full"
+                    style={{ width: `${(qrCountdown / 60) * 100}%` }}
+                  />
+                </div>
+                <p className="text-[9px] text-gray-400 text-center leading-normal">
+                  The session QR code expires every 60 seconds automatically. It will regenerate dynamically without any manual action needed.
+                </p>
+              </div>
+            )}
 
             {errorMessage && (
               <div className="text-xs text-red-750 mt-3 p-3 bg-red-50 border border-red-100 rounded-xl flex flex-col gap-2 max-w-full text-left">

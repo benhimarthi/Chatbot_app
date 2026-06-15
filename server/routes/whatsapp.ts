@@ -25,6 +25,8 @@ const router = Router();
 
 // API: Connect WhatsApp Instance
 router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedRequest, res) => {
+  let cleanPhone = "";
+  let sessionPhone = "";
   try {
     const workspaceId = req.workspaceId!;
     const idToken = req.idToken!;
@@ -62,7 +64,7 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
       });
     }
 
-    const cleanPhone = phoneToUse.replace(/\D/g, '');
+    cleanPhone = phoneToUse.replace(/\D/g, '');
     if (cleanPhone.length < 7) {
       return res.status(400).json({
         success: false,
@@ -73,6 +75,7 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
 
     // Capture variables and automatically satisfy/promote MFA status variables
     const mfaPhone = cleanPhone;
+    sessionPhone = mfaPhone.startsWith('+') ? mfaPhone : `+${mfaPhone}`;
     existingObj.mfaEnabled = true;
     existingObj.mfaPhone = cleanPhone;
     existingObj.phone = cleanPhone;
@@ -124,9 +127,8 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
 
     // 3. User has no session attached, we create a whatsapp session
     if (!whatsappSessionId) {
-      console.log(`No WaSender session found attached for ${instanceName}. Creating new session...`);
+      console.log(`No WaSender session found attached for ${instanceName}. Creating new session with phone: ${sessionPhone}...`);
       try {
-        const sessionPhone = mfaPhone.startsWith('+') ? mfaPhone : `+${mfaPhone}`;
         const createRes = await createSession(instanceName, sessionPhone, webhookUrl);
         console.log(`Session creation response success:`, JSON.stringify(createRes));
 
@@ -201,32 +203,34 @@ router.post("/api/whatsapp/connect", requireAuth, async (req: AuthenticatedReque
       connected: alreadyConnected || existingObj.connected || false,
       customWebhookUrl: webhookUrl,
       whatsappSessionId,
-      apiKey
+      apiKey,
+      sentPhoneNumber: sessionPhone
     });
   } catch (error: any) {
     console.error("WhatsApp Connection failed:", error);
     res.status(500).json({ 
       error: error.message || "Failed to connect WhatsApp",
-      details: error.response?.data ? JSON.stringify(error.response.data) : (error.stack || String(error))
+      details: `[Target Phone Sent to WaSender: +${cleanPhone}] ` + (error.response?.data ? JSON.stringify(error.response.data) : (error.stack || String(error)))
     });
   }
 });
 
 // API: Get Current WhatsApp Connection State
 router.get("/api/whatsapp/status", requireAuth, async (req: AuthenticatedRequest, res) => {
+  let whatsappSessionId = "";
+  let existingData: any = {};
+  let instanceName = "";
   try {
     const workspaceId = req.workspaceId!;
     const idToken = req.idToken!;
 
-    const instanceName = `instance_${workspaceId}`;
+    instanceName = `instance_${workspaceId}`;
     
     // Fetch existing settings first
     const whatsappDocPath = `workspaces/${workspaceId}/whatsapp/${instanceName}`;
     const snap = await restGetDoc(whatsappDocPath, idToken);
     let phone = "";
-    let existingData: any = {};
     let apiKey = "";
-    let whatsappSessionId = "";
     if (snap.exists) {
       existingData = snap.data() || {};
       phone = snap.data()?.phone || "";
@@ -308,6 +312,21 @@ router.get("/api/whatsapp/status", requireAuth, async (req: AuthenticatedRequest
     });
   } catch (error: any) {
     console.error("WhatsApp Status check failed:", error);
+    if (whatsappSessionId) {
+      return res.json({
+        success: false,
+        sessionExists: true,
+        whatsappSessionId,
+        instanceName,
+        connected: false,
+        state: 'close',
+        phone: existingData.phone || "",
+        error: error.message || "Failed to check WaSender state",
+        customWebhookUrl: existingData.customWebhookUrl || existingData.webhookUrl || "",
+        mfaEnabled: !!existingData.mfaEnabled,
+        mfaPhone: existingData.mfaPhone || ""
+      });
+    }
     res.status(500).json({ error: error.message || "Failed to check status" });
   }
 });
@@ -697,16 +716,28 @@ router.post("/api/whatsapp/webhook", async (req, res) => {
               console.log(`Node app AI Chatbot trigger: chatbotEnabled=true for workspaceId=${workspaceId}`);
               const userData = userSnap.data() || {};
               
+              // Load customInstructions and bookingEnabled from the workspace item if specified
+              const workspaceSnap = await restGetDoc(`workspaces/${workspaceId}`);
+              const workspaceData = workspaceSnap.exists ? (workspaceSnap.data() || {}) : {};
+              
+              const customInstructions = workspaceData.customInstructions !== undefined 
+                ? workspaceData.customInstructions 
+                : (userData.customInstructions || "");
+                
+              const bookingEnabled = workspaceData.bookingEnabled !== undefined 
+                ? workspaceData.bookingEnabled 
+                : (userData.bookingEnabled || false);
+
               const geminiApiKey = process.env.GEMINI_API_KEY || userData.apiKey;
               if (geminiApiKey) {
                 const systemInstruction = `
 Your are a professional, friendly, and efficient AI support assistant representing ${userData.businessName || "our business"}.
 
 Custom Core Rules & Instructions:
-${userData.customInstructions || "Answer customers politely. Be very natural and brief."}
+${customInstructions || "Answer customers politely. Be very natural and brief."}
 
 Booking / Reservation Capability:
-${userData.bookingEnabled ? `Table table booking and reservations are ACTIVE. When a user wishes to make a reservation, collect their: number of guests, date, time, customer name, and customer phone number in a smooth, human conversation.` : `Table table booking is not configured.`}
+${bookingEnabled ? `Table table booking and reservations are ACTIVE. When a user wishes to make a reservation, collect their: number of guests, date, time, customer name, and customer phone number in a smooth, human conversation.` : `Table table booking is not configured.`}
 
 Important Operational mandates:
 1. Keep your reply brief, natural, and friendly. Avoid excessive jargon.
@@ -751,7 +782,7 @@ Important Operational mandates:
                     console.log(`Dispatched automated WaSender AI response to ${toPhone} using session ID: "${cleanSessionId}"`);
                     
                     await axios.post(
-                      `https://api.wasenderapi.com/api/sessions/${cleanSessionId}/messages/text`,
+                      `https://www.wasenderapi.com/api/sessions/${cleanSessionId}/messages/text`,
                       {
                         to: toPhone,
                         text: replyText

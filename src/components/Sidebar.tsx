@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, FileText, MessageSquare, Settings, LogOut, Wallet, UserCircle, Briefcase, Code, Users, Shield, Inbox } from 'lucide-react';
+import { LayoutDashboard, FileText, MessageSquare, Settings, LogOut, Wallet, UserCircle, Briefcase, Code, Users, Shield, Inbox, Presentation } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { logout, auth, getUserSettings } from '../firebase';
 import * as React from 'react';
@@ -13,10 +13,16 @@ const navItems = [
   { icon: Briefcase, label: 'Business', path: '/dashboard/business' },
   { icon: Users, label: 'Customers', path: '/dashboard/customers' },
   { icon: Code, label: 'Install', path: '/dashboard/install' },
+  { icon: Presentation, label: 'Investor Deck', path: '/dashboard/investor-deck' },
   { icon: Settings, label: 'Settings', path: '/dashboard/settings' },
 ];
 
-export const Sidebar = () => {
+interface SidebarProps {
+  onClose?: () => void;
+  className?: string;
+}
+
+export const Sidebar = ({ onClose, className }: SidebarProps) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isProfileOpen, setIsProfileOpen] = React.useState(false);
@@ -35,6 +41,7 @@ export const Sidebar = () => {
   const handleLogout = async () => {
     try {
       await logout();
+      onClose?.();
       navigate('/');
     } catch (error) {
       console.error('Logout failed:', error);
@@ -42,18 +49,19 @@ export const Sidebar = () => {
   };
 
   return (
-    <aside className="w-64 h-screen bg-white border-r border-gray-100 flex flex-col sticky top-0">
-      <Link to="/" className="p-6 flex items-center hover:opacity-80 transition-opacity">
+    <aside className={cn("w-64 h-screen bg-white border-r border-gray-100 flex flex-col sticky top-0", className)}>
+      <Link to="/" onClick={onClose} className="p-6 flex items-center hover:opacity-80 transition-opacity">
         <span className="font-bold text-xl tracking-tight text-gray-900">Chat<span className="text-indigo-600">Flow</span></span>
       </Link>
 
-      <nav className="flex-1 px-4 py-4 space-y-1">
+      <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
             <Link
               key={item.path}
               to={item.path}
+              onClick={onClose}
               className={cn(
                 'flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors',
                 isActive
@@ -69,6 +77,7 @@ export const Sidebar = () => {
         {isAdmin && (
           <Link
             to="/dashboard/admin"
+            onClick={onClose}
             className={cn(
               'flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors',
               location.pathname === '/dashboard/admin'
@@ -84,7 +93,10 @@ export const Sidebar = () => {
 
       <div className="p-4 border-t border-gray-50 space-y-2">
         <button 
-          onClick={() => setIsProfileOpen(true)}
+          onClick={() => {
+            setIsProfileOpen(true);
+            onClose?.();
+          }}
           className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-sm font-medium text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors group"
         >
           <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center group-hover:bg-indigo-200 transition-colors overflow-hidden">

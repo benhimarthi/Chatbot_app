@@ -11,6 +11,7 @@ import { WidgetPage } from './pages/WidgetPage';
 import { AdminPage } from './pages/AdminPage';
 import { CustomersPage } from './pages/CustomersPage';
 import { WhatsAppPage } from './pages/WhatsAppPage';
+import { InvestorDeckPage } from './pages/InvestorDeckPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import * as React from 'react';
 import { auth, getUserSettings, updateLastActive, logEvent } from './firebase';
@@ -117,6 +118,7 @@ export default function App() {
             <Route path="customers" element={<CustomersPage />} />
             <Route path="install" element={<InstallPage />} />
             <Route path="settings" element={<SettingsPage />} />
+            <Route path="investor-deck" element={<InvestorDeckPage />} />
             <Route
               path="admin"
               element={

@@ -132,9 +132,11 @@ service cloud.firestore {
     }
 
     function isValidWorkspace(data) {
-      return hasOnlyAllowedFields(['id', 'ownerId', 'createdAt']) &&
+      return hasOnlyAllowedFields(['id', 'ownerId', 'createdAt', 'customInstructions', 'bookingEnabled']) &&
              data.id is string &&
-             data.ownerId == request.auth.uid;
+             data.ownerId == request.auth.uid &&
+             (!('customInstructions' in data) || data.customInstructions == null || data.customInstructions is string) &&
+             (!('bookingEnabled' in data) || data.bookingEnabled is bool);
     }
 
     function isValidWhatsAppInstance(data) {

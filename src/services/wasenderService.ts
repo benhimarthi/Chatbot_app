@@ -16,11 +16,22 @@ const getApiKey = () => {
 };
 
 const getPersonalAccessToken = () => {
-  return sanitizeEnvVal(process.env.WASENDER_PERSONAL_ACCESS_TOKEN) || sanitizeEnvVal(process.env.WASENDER_API_KEY) || 'your_personal_access_token';
+  const pat = sanitizeEnvVal(process.env.WASENDER_PERSONAL_ACCESS_TOKEN);
+  if (pat && pat !== 'your_personal_access_token') {
+    return pat;
+  }
+  const apiKey = sanitizeEnvVal(process.env.WASENDER_API_KEY);
+  if (apiKey && apiKey !== 'your_bearer_token') {
+    return apiKey;
+  }
+  return 'your_personal_access_token';
+};
+
+const getBaseUrl = () => {
+  return 'https://www.wasenderapi.com/api';
 };
 
 const getSessionId = (instanceName: string) => {
-  // Fallback to SESSION_ID env if instanceName is empty or doesn't map to a specific sessions
   const envSessionId = sanitizeEnvVal(process.env.SESSION_ID);
   if (envSessionId && envSessionId !== 'your_session_id') {
     return envSessionId;
@@ -49,25 +60,30 @@ export const getConnectionState = async (instanceName: string, customSessionId?:
   }
 
   try {
-    const url = `https://www.wasenderapi.com/api/status`;
-    console.log(`WaSender API: Checking connection status via GET /api/status...`);
-    
-    const response = await axios.get(url, { headers: getHeaders(key) });
-    const data = response.data || {};
-    
-    const rawState = String(data.status || '').toLowerCase();
-    const connected = rawState === 'connected' || rawState === 'open' || rawState === 'active';
-    
-    console.log(`WaSender API status: connected=${connected}, raw_state=${rawState}`);
-    
+    const config = {
+      method: 'GET',
+      url: 'https://www.wasenderapi.com/api/status',
+      headers: {
+        'Authorization': `Bearer ${key}`
+      }
+    };
+
+    console.log(`WaSender API: Checking connection status on GET https://www.wasenderapi.com/api/status...`);
+    const response = await axios(config);
+    console.log(response.data);
+
+    const data = response.data?.data || response.data || {};
+    const rawState = String(data.status || data.state || '').toLowerCase();
+    const connected = rawState === 'connected' || rawState === 'open' || rawState === 'active' || rawState === 'online';
+
     return {
       connected,
       state: connected ? 'open' : 'close',
-      status: rawState.toUpperCase(),
-      phone: ''
+      status: rawState.toUpperCase() || 'DISCONNECTED',
+      phone: data.phone_number || ''
     };
   } catch (error: any) {
-    console.error('Error getting WaSender status:', error?.response?.data || error.message);
+    console.error('Error:', error?.response?.data || error.message);
     return { connected: false, state: 'close', status: 'DISCONNECTED' };
   }
 };
@@ -84,7 +100,7 @@ export const connectSession = async (instanceName: string, customSessionId?: str
   }
 
   try {
-    const url = `https://www.wasenderapi.com/api/whatsapp-sessions/${sessionId}/connect`;
+    const url = `${getBaseUrl()}/whatsapp-sessions/${sessionId}/connect`;
     console.log(`WaSender API: Initiating connection for session ID "${sessionId}" (url: ${url})...`);
     const response = await axios.post(url, {}, {
       headers: {
@@ -95,9 +111,10 @@ export const connectSession = async (instanceName: string, customSessionId?: str
     console.log(`WaSender connect API response:`, JSON.stringify(response.data));
     return response.data;
   } catch (error: any) {
-    console.error('Error initiating WaSender connection:', error?.response?.data || error.message);
-    // Ignore already open status or let client handle specific error cases
-    return error?.response?.data || { success: false, message: error.message };
+    const apiErrorData = error?.response?.data;
+    const apiMsg = apiErrorData?.message || apiErrorData?.error || (apiErrorData ? JSON.stringify(apiErrorData) : error.message);
+    console.error('Error initiating WaSender connection:', apiMsg);
+    return apiErrorData || { success: false, message: error.message };
   }
 };
 
@@ -113,7 +130,7 @@ export const fetchQRCode = async (instanceName: string, customSessionId?: string
   }
 
   try {
-    const url = `https://www.wasenderapi.com/api/whatsapp-sessions/${sessionId}/qrcode`;
+    const url = `${getBaseUrl()}/whatsapp-sessions/${sessionId}/qrcode`;
     console.log(`WaSender API: Fetching QR Code for session ID "${sessionId}" (url: ${url})`);
     
     const response = await axios.get(url, {
@@ -138,12 +155,13 @@ export const fetchQRCode = async (instanceName: string, customSessionId?: string
       ...data
     };
   } catch (error: any) {
-    const apiMsg = error?.response?.data?.message || error?.response?.data?.error || error.message;
+    const apiErrorData = error?.response?.data;
+    const apiMsg = apiErrorData?.message || apiErrorData?.error || (apiErrorData ? JSON.stringify(apiErrorData) : error.message);
     const wrappedError = new Error(apiMsg || 'Failed to fetch QR code from WaSender API');
     (wrappedError as any).status = error?.response?.status;
     (wrappedError as any).response = error?.response;
     
-    console.error('Error fetching WaSender QR code:', error?.response?.data || error.message);
+    console.error('Error fetching WaSender QR code:', apiMsg);
     throw wrappedError;
   }
 };
@@ -159,7 +177,7 @@ export const sendTextMessage = async (instanceName: string, toPhone: string, tex
   }
 
   try {
-    const url = `https://www.wasenderapi.com/api/send-message`;
+    const url = `${getBaseUrl()}/send-message`;
     const payload = {
       to: toPhone,  // keep the + format e.g. "+212693450922"
       text: text
@@ -168,7 +186,9 @@ export const sendTextMessage = async (instanceName: string, toPhone: string, tex
     const response = await axios.post(url, payload, { headers: getHeaders(key) });
     return response.data;
   } catch (error: any) {
-    throw new Error(`Failed to send: ${JSON.stringify(error?.response?.data || error.message)}`);
+    const apiErrorData = error?.response?.data;
+    const apiMsg = apiErrorData?.message || apiErrorData?.error || (apiErrorData ? JSON.stringify(apiErrorData) : error.message);
+    throw new Error(`Failed to send WhatsApp message: ${apiMsg}`);
   }
 };
 
@@ -176,7 +196,7 @@ export const sendTextMessage = async (instanceName: string, toPhone: string, tex
  * Stub matching Evolution API connection lifecycle interfaces.
  */
 export const createInstance = async (instanceName: string) => {
-  console.log(`WaSender API: createInstance stub called for ${instanceName}.`);
+  console.log(`&WaSender API: createInstance stub called for ${instanceName}.`);
   return { success: true, message: "WaSender session initialized" };
 };
 
@@ -192,31 +212,52 @@ export const setWebhook = async (instanceName: string, webhookUrl: string) => {
  * Creates a new WhatsApp session with WaSender API for new clients.
  */
 export const createSession = async (clientName: string, phoneNumber: string, webhookUrl: string) => {
-  const key = getPersonalAccessToken(); // different from session API key!
+  const key = getPersonalAccessToken();
+
+  if (!key || key === 'your_personal_access_token' || key === 'your_bearer_token') {
+    throw new Error('WASENDER_PERSONAL_ACCESS_TOKEN is not configured for session registration.');
+  }
   
-  const response = await axios.post(
-    'https://www.wasenderapi.com/api/whatsapp-sessions',
-    {
-      name: clientName,
-      phone_number: phoneNumber,
-      account_protection: true,
-      log_messages: true,
-      read_incoming_messages: false,
-      webhook_url: webhookUrl,
-      webhook_enabled: true,
-      webhook_events: [
-        "messages.received",
-        "session.status",
-        "messages.update"
-      ]
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${key}`,
-        'Content-Type': 'application/json'
+  // Clean phone number to be purely digits formatted with starting '+' (WaSender API expects valid E.164 string format)
+  const digits = phoneNumber.replace(/\D/g, '');
+  const cleanPhone = digits ? `+${digits}` : '';
+
+  console.log(`[WaSender API Service] Registering/Creating WhatsApp session with WaSender API. Payload params: name="${clientName}", phone_number="${cleanPhone}", webhook_url="${webhookUrl}"`);
+
+  try {
+    const response = await axios.post(
+      `${getBaseUrl()}/whatsapp-sessions`,
+      {
+        name: clientName,
+        phone_number: cleanPhone,
+        account_protection: true,
+        log_messages: true,
+        read_incoming_messages: false,
+        webhook_url: webhookUrl,
+        webhook_enabled: true,
+        webhook_events: [
+          "messages.received",
+          "session.status",
+          "messages.update"
+        ]
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
-  
-  return response.data; // contains session ID and API key under data
+    );
+    
+    return response.data;
+  } catch (error: any) {
+    const apiErrorData = error?.response?.data;
+    const apiMsg = apiErrorData?.message || apiErrorData?.error || (apiErrorData ? JSON.stringify(apiErrorData) : error.message);
+    const wrappedError = new Error(apiMsg || 'Failed to create session with WaSender API');
+    (wrappedError as any).status = error?.response?.status;
+    (wrappedError as any).response = error?.response;
+    
+    console.error('Error creating WaSender session:', apiMsg);
+    throw wrappedError;
+  }
 };

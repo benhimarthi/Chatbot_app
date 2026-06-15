@@ -25,6 +25,7 @@ import chatRouter from "./server/routes/chat.ts";
 import processRouter from "./server/routes/process.ts";
 import ragRouter from "./server/routes/rag.ts";
 import whatsappRouter from "./server/routes/whatsapp.ts";
+import investorRouter from "./server/routes/investor.ts";
 
 async function startServer() {
   try {
@@ -75,6 +76,7 @@ async function startServer() {
     app.use(processRouter);
     app.use(ragRouter);
     app.use(whatsappRouter);
+    app.use(investorRouter);
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {

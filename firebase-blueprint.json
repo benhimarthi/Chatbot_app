@@ -112,6 +112,8 @@
       "properties": {
         "id": { "type": "string" },
         "ownerId": { "type": "string" },
+        "customInstructions": { "type": "string" },
+        "bookingEnabled": { "type": "boolean" },
         "createdAt": { "type": "object" }
       },
       "required": ["id", "ownerId"]
